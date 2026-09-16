@@ -4,14 +4,19 @@
  * real permitted API calls (Wikipedia, Nominatim), and structured results with
  * provenance come back. Also proves: scaffolded agents fail honestly, task
  * detail assembles fully, the saved-research library does real idempotent CRUD,
- * and a disabled agent refuses tasks with an honest message (and un-disables).
+ * a disabled agent refuses tasks with an honest message (and un-disables),
+ * orchestration events are real and ordered, and the DealFinder Agent parses
+ * local-service commands and searches OpenStreetMap via Overpass with per-hit
+ * provenance and honest unavailable/empty/ask-for-location paths (the smoke
+ * tolerates Overpass degradation explicitly; it asserts honesty, not uptime).
  *
  * Run: bun run scripts/smoke.ts
  * Exit code 0 = all assertions passed.
  */
 import { executeCommand, getDashboardState, deleteSavedResearch, getEventsSince, getSavedLibrary, getTaskDetail, saveResultToLibrary, setAgentEnabledState } from "../src/server/manager";
 import { classifyWithFallback } from "../src/server/model";
-import type { DisabledAgentResult, ResearchBriefResult } from "../src/server/types";
+import { parseDealfinderQuery } from "../src/server/dealfinder/parser";
+import type { DealFinderSearchResult, DisabledAgentResult, ResearchBriefResult } from "../src/server/types";
 
 let failures = 0;
 
@@ -328,7 +333,208 @@ async function main(): Promise<void> {
     JSON.stringify(streamTail.events.slice(0, 3)),
   );
 
-  // 8. Env honesty.
+  // 8. DealFinder Agent: deterministic parser units, real Overpass search with
+  // provenance (or the honest unavailable path when the source is degraded —
+  // overpass-api.de can refuse connections or return empty bodies under load,
+  // so the smoke explicitly tolerates both outcomes), price-cap honesty, and
+  // the structured ask-for-location outcome. No branch of these checks can
+  // fail because of Overpass weather; they assert honesty, not reachability.
+  console.log("\n-- dealfinder: deterministic parser units (no network) --");
+  const p1 = parseDealfinderQuery("Find me a low-taper barber within 10 miles under $40");
+  check("parser extracts barber service", p1.service?.key === "barber", JSON.stringify(p1.service));
+  check("parser captures the 'low taper' specialty", p1.specialties.includes("low taper"), JSON.stringify(p1.specialties));
+  check(
+    "parser extracts the explicit 10-mile radius",
+    p1.radius.value === 10 && p1.radius.unit === "miles" && p1.radius.source === "command",
+    JSON.stringify(p1.radius),
+  );
+  check(
+    "parser extracts the $40 price cap",
+    p1.maxPrice?.amount === 40 && p1.maxPrice.currency === "USD",
+    JSON.stringify(p1.maxPrice),
+  );
+  check(
+    "parser finds no location in the flagship command (no guessing)",
+    p1.coords === null && p1.place === null && !p1.unresolvableSelfLocation,
+    JSON.stringify({ coords: p1.coords, place: p1.place }),
+  );
+  const p2 = parseDealfinderQuery("Find me a barber near 30.2672, -97.7431 within 10 miles");
+  check(
+    "parser extracts inline coordinates",
+    p2.coords?.lat === 30.2672 && p2.coords?.lon === -97.7431,
+    JSON.stringify(p2.coords),
+  );
+  const p3 = parseDealfinderQuery("hairdresser salon in Austin within 5 km");
+  check(
+    "parser maps salon phrasing to hairdresser, 5 km radius, place Austin",
+    p3.service?.key === "hairdresser" && p3.radius.unit === "km" && p3.radius.value === 5 && p3.place === "Austin",
+    JSON.stringify({ service: p3.service, radius: p3.radius, place: p3.place }),
+  );
+  const c4 = classifyWithFallback("Find a hairdresser near downtown Austin");
+  check("fallback router classifies hairdresser search as dealfinder", c4.intent === "dealfinder", JSON.stringify(c4));
+
+  console.log("\n-- dealfinder: real search near Austin center coordinates --");
+  const dres = await executeCommand("Find me a barber near 30.2672, -97.7431 within 10 miles");
+  check("dealfinder command executed ok", dres.ok === true && Boolean(dres.taskId), JSON.stringify(dres));
+  const dstate = await getDashboardState();
+  const dtask = dstate.tasks.find((t) => t.id === dres.taskId);
+  check(
+    "dealfinder task routed to the DealFinder Agent",
+    dtask?.intent === "dealfinder" && dtask?.agentId === "dealfinder",
+    JSON.stringify(dtask),
+  );
+  const drun = dres.taskId ? dstate.runs[dres.taskId]?.[0] : undefined;
+  const dOverpassOk = drun?.toolCalls[0]?.ok === true;
+  check(
+    "dealfinder run recorded exactly one overpass.search tool call",
+    drun?.toolCalls.length === 1 && drun.toolCalls[0].tool === "overpass.search",
+    JSON.stringify(drun?.toolCalls),
+  );
+  const dresult = dres.taskId ? dstate.results[dres.taskId] : undefined;
+  const dpayload = dresult?.payload as DealFinderSearchResult | undefined;
+  check("result kind is dealfinder.search", dpayload?.kind === "dealfinder.search", String(dpayload?.kind));
+  check(
+    "service recorded as barber with the 10-mile radius",
+    dpayload?.service?.key === "barber" && dpayload?.radiusMiles === 10,
+    JSON.stringify({ service: dpayload?.service, radiusMiles: dpayload?.radiusMiles }),
+  );
+
+  const dUnavail = dpayload?.sourceUnavailable === true;
+  const dHits = dpayload?.results ?? [];
+  const dHitBranch = !dUnavail && dHits.length > 0;
+  const dEmptyBranch = !dUnavail && dHits.length === 0;
+  check(
+    "exactly one honest outcome fired (source unavailable / results / empty area)",
+    Number(dUnavail) + Number(dHitBranch) + Number(dEmptyBranch) === 1,
+    JSON.stringify({ unavailable: dUnavail, hits: dHits.length }),
+  );
+  if (dUnavail) {
+    check(
+      "unavailable path carries the honest note and the exact request URL",
+      (dpayload?.notes ?? []).some((n) => n.includes("unavailable")) &&
+        Boolean(dpayload?.overpassUrl?.startsWith("https://")),
+      JSON.stringify(dpayload?.notes),
+    );
+    console.log("   (Overpass is degraded right now: the honest-unavailable path was verified)");
+  }
+  if (dHitBranch) {
+    check(
+      "every hit carries provenance (source, request URL, fetched-at)",
+      dHits.every(
+        (h) =>
+          h.provenance.source.includes("Overpass") &&
+          h.provenance.url.startsWith("https://") &&
+          !Number.isNaN(Date.parse(h.provenance.fetchedAt)),
+      ),
+      JSON.stringify(dHits[0]?.provenance),
+    );
+    check(
+      "every price is honestly 'not verified' with an explanation",
+      dHits.every((h) => h.price.verified === false && h.price.display === "not verified" && h.price.explanation.length > 0),
+      JSON.stringify(dHits[0]?.price),
+    );
+    check(
+      "distances are computed and ranked nearest-first",
+      dHits.every((h) => h.distanceMiles >= 0) &&
+        dHits.every((h, i) => i === 0 || h.distanceMiles >= dHits[i - 1].distanceMiles),
+      JSON.stringify(dHits.slice(0, 3).map((h) => Number(h.distanceMiles.toFixed(2)))),
+    );
+    check(
+      "all hits are inside the 10-mile radius (bbox is square, results are a circle)",
+      dHits.every((h) => h.distanceMiles <= 10.0001),
+      JSON.stringify(Math.max(...dHits.map((h) => h.distanceMiles))),
+    );
+    check(
+      "why-lines reference real dimensions (computed distance)",
+      dHits.every((h) => h.why.includes("computed")),
+      JSON.stringify(dHits[0]?.why),
+    );
+  }
+  if (dEmptyBranch) {
+    check(
+      "empty-area path explains itself and cites the request URL",
+      (dpayload?.notes ?? []).some((n) => n.includes("No ")) && Boolean(dpayload?.overpassUrl?.startsWith("https://")),
+      JSON.stringify(dpayload?.notes),
+    );
+  }
+
+  const dEvents = (await getEventsSince(0)).events.filter((e) => e.taskId === dres.taskId);
+  check(
+    "events record the overpass.search tool call (started and finished)",
+    dEvents.some((e) => e.type === "tool_call.started" && e.data.tool === "overpass.search") &&
+      dEvents.some((e) => e.type === "tool_call.finished" && e.data.tool === "overpass.search"),
+    JSON.stringify(dEvents.map((e) => e.type)),
+  );
+
+  console.log("\n-- dealfinder: price cap honesty (same origin+radius exercises the query cache) --");
+  const pres = await executeCommand("Find me a barber under $40 near 30.2672, -97.7431");
+  check("price-capped command executed ok", pres.ok === true && Boolean(pres.taskId), JSON.stringify(pres));
+  const pstate = await getDashboardState();
+  const ppayload = (pres.taskId ? pstate.results[pres.taskId]?.payload : undefined) as DealFinderSearchResult | undefined;
+  check(
+    "price cap parsed and persisted on the result",
+    ppayload?.kind === "dealfinder.search" && ppayload?.maxPrice?.amount === 40,
+    JSON.stringify(ppayload?.maxPrice),
+  );
+  check(
+    "the result states plainly that prices could not be checked against OSM",
+    (ppayload?.notes ?? []).some((n) => n.includes("Prices could not be checked")),
+    JSON.stringify(ppayload?.notes),
+  );
+  if (dOverpassOk) {
+    check(
+      "identical Overpass query was served from the in-process cache",
+      ppayload?.servedFromCache === true,
+      String(ppayload?.servedFromCache),
+    );
+  }
+
+  console.log("\n-- dealfinder: no location means a structured ask, never a guess --");
+  const lres = await executeCommand("Find me a low-taper barber within 10 miles under $40");
+  check("no-location command executed ok", lres.ok === true && Boolean(lres.taskId), JSON.stringify(lres));
+  const lstate = await getDashboardState();
+  const ltask = lstate.tasks.find((t) => t.id === lres.taskId);
+  check("no-location task completed with a structured outcome", ltask?.status === "completed", String(ltask?.status));
+  const lpayload = (lres.taskId ? lstate.results[lres.taskId]?.payload : undefined) as DealFinderSearchResult | undefined;
+  check(
+    "ask-for-location flag set, no origin, zero results",
+    lpayload?.kind === "dealfinder.search" &&
+      lpayload?.askedForLocation === true &&
+      lpayload?.origin === null &&
+      lpayload?.results.length === 0,
+    JSON.stringify({ asked: lpayload?.askedForLocation, origin: lpayload?.origin, n: lpayload?.results.length }),
+  );
+  check(
+    "specialty captured and explicitly marked unsearchable",
+    (lpayload?.specialties ?? []).includes("low taper") && lpayload?.specialtySearchable === false,
+    JSON.stringify({ specialties: lpayload?.specialties, searchable: lpayload?.specialtySearchable }),
+  );
+  check(
+    "the ask explains how to provide a location",
+    (lpayload?.notes ?? []).some((n) => n.includes("Provide a place name")),
+    JSON.stringify(lpayload?.notes),
+  );
+  const lrun = lres.taskId ? lstate.runs[lres.taskId]?.[0] : undefined;
+  check(
+    "no tool calls were made for the ask-for-location run",
+    lrun?.toolCalls.length === 0,
+    JSON.stringify(lrun?.toolCalls),
+  );
+  const lEvents = (await getEventsSince(0)).events.filter((e) => e.taskId === lres.taskId);
+  check(
+    "ask-for-location task emitted zero tool_call events",
+    lEvents.every((e) => !e.type.startsWith("tool_call.")),
+    JSON.stringify(lEvents.map((e) => e.type)),
+  );
+  check(
+    "manager chat message asks for a location honestly",
+    lstate.messages.some(
+      (m) => m.taskId === lres.taskId && m.role === "manager" && m.content.toLowerCase().includes("location"),
+    ),
+    JSON.stringify(lstate.messages.filter((m) => m.taskId === lres.taskId).map((m) => m.content)),
+  );
+
+  // 9. Env honesty.
   console.log("\n-- environment --");
   for (const v of state.env.vars) console.log(`   ${v.name}: ${v.set ? "set" : "missing"}`);
   console.log(`   storage mode: ${state.storage.mode}`);
