@@ -1,5 +1,5 @@
 import { AGENT_SPECS, resolveAgentByIntent, managerSpec } from "./agents";
-import type { AgentExecution } from "./agents/base";
+import type { AgentExecution, ToolCallReporter } from "./agents/base";
 import { getEnvStatus } from "./env";
 import { classifyCommand } from "./model";
 import { getStore } from "./store";
@@ -9,6 +9,8 @@ import type {
   AgentStatus,
   AgentView,
   Message,
+  OrchestrationEvent,
+  OrchestrationEventType,
   RegisteredAgent,
   ResultRecord,
   SavedRecord,
@@ -22,6 +24,11 @@ import type {
  * the registered specialist agent, tracks the run, and reports honestly to
  * the chat. Every status persisted here reflects something that really
  * happened.
+ *
+ * Every step also emits a real orchestration event (task.queued,
+ * task.classified, run.started, tool_call.*, message.added, run.*,
+ * task.*) through the store, in the order the steps actually happen. The
+ * live view streams exactly these events; nothing is synthesized.
  */
 
 /** Task ids with a run actually in flight in this process (drives "working"). */
@@ -32,6 +39,98 @@ async function syncRegistry(): Promise<void> {
   for (const spec of AGENT_SPECS) {
     await store.upsertAgent(spec);
   }
+}
+
+const randomEventId = (): string =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `evt_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+/** Persist one orchestration event. Awaited so events land in the store in
+ *  the exact order the steps happen (that order is observable and tested). */
+async function emit(
+  store: ReturnType<typeof getStore>,
+  type: OrchestrationEventType,
+  fields: { taskId?: string | null; runId?: string | null; agentId?: string | null; data?: Record<string, unknown> },
+): Promise<void> {
+  try {
+    await store.appendEvent({
+      id: randomEventId(),
+      type,
+      taskId: fields.taskId ?? null,
+      runId: fields.runId ?? null,
+      agentId: (fields.agentId as OrchestrationEvent["agentId"]) ?? null,
+      at: new Date().toISOString(),
+      data: fields.data ?? {},
+    });
+  } catch {
+    // A storage hiccup while appending an event must never break the actual
+    // orchestration. The event is genuinely missing rather than faked.
+  }
+}
+
+/** Persist a chat message and emit its message.added event. */
+async function addMessage(
+  store: ReturnType<typeof getStore>,
+  taskId: string,
+  role: Message["role"],
+  content: string,
+): Promise<void> {
+  await store.createMessage(taskId, role, content);
+  await emit(store, "message.added", {
+    taskId,
+    data: { role, preview: content.slice(0, 240) },
+  });
+}
+
+/** Builds the real-time tool-call reporter for a run. Appends are chained so
+ *  started/finished pairs land in order without blocking the agent's work.
+ *  flush() waits for the chain to drain (called before run completion so the
+ *  persisted order matches the real order of operations). */
+function makeReporter(
+  store: ReturnType<typeof getStore>,
+  taskId: string,
+  runId: string,
+  agentId: string,
+): { reporter: ToolCallReporter; flush: () => Promise<void> } {
+  let chain: Promise<void> = Promise.resolve();
+  const enqueue = (fn: () => Promise<void>): void => {
+    chain = chain.then(fn).catch(() => {});
+  };
+  return {
+    reporter: {
+      started(call) {
+        enqueue(() =>
+          emit(store, "tool_call.started", {
+            taskId,
+            runId,
+            agentId,
+            data: { tool: call.tool, request: call.request },
+          }),
+        );
+      },
+      finished(call) {
+        enqueue(() =>
+          emit(store, "tool_call.finished", {
+            taskId,
+            runId,
+            agentId,
+            data: {
+              tool: call.tool,
+              request: call.request,
+              status: call.status,
+              ok: call.ok,
+              durationMs: call.durationMs,
+              ...(call.error ? { error: call.error } : {}),
+            },
+          }),
+        );
+      },
+    },
+    async flush() {
+      await chain.catch(() => {});
+    },
+  };
 }
 
 export async function executeCommand(
@@ -52,13 +151,24 @@ export async function executeCommand(
   await syncRegistry();
 
   const task = await store.createTask(trimmed);
-  await store.createMessage(task.id, "user", trimmed);
+  await emit(store, "task.queued", { taskId: task.id, data: { command: trimmed } });
+  await addMessage(store, task.id, "user", trimmed);
 
   // 1. Interpret and classify.
   const classification = await classifyCommand(trimmed);
   await store.updateTask(task.id, {
     intent: classification.intent,
     router: classification.router,
+  });
+  await emit(store, "task.classified", {
+    taskId: task.id,
+    data: {
+      intent: classification.intent,
+      router: classification.router,
+      subject: classification.subject,
+      reasoning: classification.reasoning,
+      ...(classification.model ? { model: classification.model } : {}),
+    },
   });
 
   // 2. Route to the registered agent for that intent.
@@ -69,7 +179,8 @@ export async function executeCommand(
     classification.router === "llm"
       ? `LLM router (model ${classification.model})`
       : "deterministic fallback router (no LLM configured)";
-  await store.createMessage(
+  await addMessage(
+    store,
     task.id,
     "manager",
     `Classified intent "${classification.intent}" via ${routerLabel}: ${classification.reasoning}. ` +
@@ -82,6 +193,12 @@ export async function executeCommand(
   const registered = await store.getAgent(agent.spec.id);
   if (registered && !registered.enabled) {
     const run = await store.createRun(task.id, agent.spec.id);
+    await emit(store, "run.started", {
+      taskId: task.id,
+      runId: run.id,
+      agentId: agent.spec.id,
+      data: { refused: true },
+    });
     const refusal =
       `${agent.spec.name} is disabled, so this task was refused and nothing was executed. ` +
       `No tools were called and no result was produced. Re-enable the agent on the Agents page ` +
@@ -91,6 +208,12 @@ export async function executeCommand(
       toolCalls: [],
       error: "agent disabled by owner; task refused",
       finishedAt: new Date().toISOString(),
+    });
+    await emit(store, "run.failed", {
+      taskId: task.id,
+      runId: run.id,
+      agentId: agent.spec.id,
+      data: { error: "agent disabled by owner; task refused", refused: true },
     });
     await store.saveResult({
       taskId: task.id,
@@ -103,28 +226,44 @@ export async function executeCommand(
       status: "failed",
       error: `${agent.spec.name} is disabled; the task was refused`,
     });
-    await store.createMessage(task.id, "manager", refusal);
+    await emit(store, "task.failed", {
+      taskId: task.id,
+      agentId: agent.spec.id,
+      data: { error: `${agent.spec.name} is disabled; the task was refused` },
+    });
+    await addMessage(store, task.id, "manager", refusal);
     return { ok: true, taskId: task.id };
   }
 
   // 3. Run the agent with real status tracking.
   const run = await store.createRun(task.id, agent.spec.id);
+  await emit(store, "run.started", {
+    taskId: task.id,
+    runId: run.id,
+    agentId: agent.spec.id,
+    data: {},
+  });
   inFlight.add(task.id);
+  const { reporter, flush } = makeReporter(store, task.id, run.id, agent.spec.id);
   let execution: AgentExecution;
   try {
     execution = await agent.execute(
       { ...task, agentId: agent.spec.id, status: "working", intent: classification.intent, router: classification.router },
-      { subject: classification.subject },
+      { subject: classification.subject, reporter },
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    await flush();
     await store.updateRun(run.id, {
       status: "failed",
       error: msg,
       finishedAt: new Date().toISOString(),
     });
+    await emit(store, "run.failed", { taskId: task.id, runId: run.id, agentId: agent.spec.id, data: { error: msg } });
     await store.updateTask(task.id, { status: "failed", error: msg });
-    await store.createMessage(
+    await emit(store, "task.failed", { taskId: task.id, agentId: agent.spec.id, data: { error: msg } });
+    await addMessage(
+      store,
       task.id,
       "manager",
       `Run failed with an unexpected error while executing: ${msg}. ` +
@@ -134,6 +273,9 @@ export async function executeCommand(
     return { ok: true, taskId: task.id };
   }
   inFlight.delete(task.id);
+  // Drain pending tool_call events so the run/task completion events land
+  // after them, matching the real order of operations.
+  await flush();
 
   await store.updateRun(run.id, {
     status: execution.status,
@@ -141,6 +283,19 @@ export async function executeCommand(
     error: execution.error,
     finishedAt: new Date().toISOString(),
   });
+  await emit(
+    store,
+    execution.status === "completed" ? "run.completed" : "run.failed",
+    {
+      taskId: task.id,
+      runId: run.id,
+      agentId: agent.spec.id,
+      data: {
+        toolCallCount: execution.toolCalls.length,
+        ...(execution.error ? { error: execution.error } : {}),
+      },
+    },
+  );
 
   // 4. Persist the structured result, if the agent produced one.
   if (execution.result) {
@@ -158,6 +313,19 @@ export async function executeCommand(
     status: finalTaskStatus,
     error: execution.error,
   });
+  await emit(
+    store,
+    finalTaskStatus === "completed" ? "task.completed" : "task.failed",
+    {
+      taskId: task.id,
+      runId: run.id,
+      agentId: agent.spec.id,
+      data: {
+        resultKind: execution.result?.kind ?? null,
+        ...(execution.error ? { error: execution.error } : {}),
+      },
+    },
+  );
 
   // 5. Manager's honest report back to the chat.
   const toolBits =
@@ -169,7 +337,8 @@ export async function executeCommand(
   const resultBit = execution.result
     ? ` Result kind: ${execution.result.kind}.`
     : " No structured result was produced.";
-  await store.createMessage(
+  await addMessage(
+    store,
     task.id,
     "manager",
     `${agent.spec.name} run ${execution.status}.${toolBits}${resultBit} ${execution.summary}`,
@@ -545,6 +714,51 @@ export async function deleteSavedResearch(id: string): Promise<DeleteSavedRespon
     return { ok: false, error: "No saved item with that id. It may already have been deleted." };
   }
   return { ok: true, error: null };
+}
+
+/* -------------------------------------------------------- live events */
+
+export interface EventStreamState {
+  ok: boolean;
+  storage: StorageInfo;
+  /** Events after the cursor, ascending by seq, filtered to taskId when one
+   *  is given. These are the real persisted orchestration events. */
+  events: OrchestrationEvent[];
+  /** Highest seq included in this scan (unfiltered). The client advances its
+   *  cursor to this so no event is ever skipped between polls. */
+  lastSeq: number;
+  error: string | null;
+}
+
+const EVENT_SCAN_LIMIT = 300;
+
+/**
+ * Cursor-based read of the event log. The live view polls this every few
+ * hundred milliseconds; with events persisted by the orchestration loop, each
+ * poll returns exactly the steps that happened since the last one.
+ */
+export async function getEventsSince(since: number, taskId?: string): Promise<EventStreamState> {
+  const store = getStore();
+  try {
+    await store.ensureReady();
+  } catch (err) {
+    return {
+      ok: false,
+      storage: {
+        mode: store.mode,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      events: [],
+      lastSeq: since,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const safeSince = Number.isFinite(since) && since >= 0 ? Math.floor(since) : 0;
+  const scan = await store.listEventsSince(safeSince, EVENT_SCAN_LIMIT);
+  const events = taskId ? scan.filter((e) => e.taskId === taskId) : scan;
+  const lastSeq = scan.length > 0 ? scan[scan.length - 1].seq : safeSince;
+  return { ok: true, storage: store.info(), events, lastSeq, error: null };
 }
 
 export { managerSpec };

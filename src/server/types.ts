@@ -174,3 +174,39 @@ export interface AgentView extends RegisteredAgent {
   lastRunAt: string | null;
   activeTaskId: string | null;
 }
+
+/* ------------------------------------------------------------- events */
+
+/**
+ * Real orchestration events, emitted by the Manager/agent loop as each step
+ * actually happens and persisted via the store. Nothing here is synthesized:
+ * if an event exists, the thing it names really happened. Events are small
+ * and carry no secrets (no env values, no API keys, no credentials).
+ */
+export type OrchestrationEventType =
+  | "task.queued"
+  | "task.classified"
+  | "run.started"
+  | "tool_call.started"
+  | "tool_call.finished"
+  | "message.added"
+  | "run.completed"
+  | "run.failed"
+  | "task.completed"
+  | "task.failed";
+
+export interface OrchestrationEvent {
+  /** Monotonic sequence number within the store (1-based). Gaps never occur
+   *  in normal operation; clients use it as a cursor ("give me everything
+   *  after seq N"). */
+  seq: number;
+  id: string;
+  type: OrchestrationEventType;
+  taskId: string | null;
+  runId: string | null;
+  agentId: AgentId | null;
+  /** ISO timestamp of when the step really happened. */
+  at: string;
+  /** Small, secret-free details (intent, tool name, request URL, duration...). */
+  data: Record<string, unknown>;
+}

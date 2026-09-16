@@ -6,7 +6,7 @@ import type {
   SummarySection,
   ToolCall,
 } from "../types";
-import type { Agent, AgentExecution, ExecutionContext } from "./base";
+import type { Agent, AgentExecution, ExecutionContext, ToolCallReporter } from "./base";
 import { awaitingAgent } from "./base";
 
 /**
@@ -84,34 +84,35 @@ async function timedFetchJson(
   url: string,
   headers: Record<string, string>,
   timeoutMs: number,
+  reporter?: ToolCallReporter,
 ): Promise<{ json: unknown | null; call: ToolCall }> {
+  // Report the start before any work happens, so the live view shows the
+  // row as running for exactly as long as the call really takes.
+  reporter?.started({ tool, request: url });
   const started = Date.now();
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
     const durationMs = Date.now() - started;
     if (!res.ok) {
-      return {
-        json: null,
-        call: { tool, request: url, status: res.status, ok: false, durationMs },
-      };
+      const call: ToolCall = { tool, request: url, status: res.status, ok: false, durationMs };
+      reporter?.finished(call);
+      return { json: null, call };
     }
     const json = (await res.json()) as unknown;
-    return {
-      json,
-      call: { tool, request: url, status: res.status, ok: true, durationMs },
-    };
+    const call: ToolCall = { tool, request: url, status: res.status, ok: true, durationMs };
+    reporter?.finished(call);
+    return { json, call };
   } catch (err) {
-    return {
-      json: null,
-      call: {
-        tool,
-        request: url,
-        status: null,
-        ok: false,
-        durationMs: Date.now() - started,
-        error: err instanceof Error ? err.message : String(err),
-      },
+    const call: ToolCall = {
+      tool,
+      request: url,
+      status: null,
+      ok: false,
+      durationMs: Date.now() - started,
+      error: err instanceof Error ? err.message : String(err),
     };
+    reporter?.finished(call);
+    return { json: null, call };
   }
 }
 
@@ -136,13 +137,14 @@ export const researchAgent: Agent = {
   spec: researchSpec,
   async execute(task, ctx: ExecutionContext): Promise<AgentExecution> {
     const subject = (ctx.subject || task.command).trim();
+    const reporter = ctx.reporter;
     const notes: string[] = [];
     const toolCalls: ToolCall[] = [];
 
     // Tool 1: Wikipedia REST summary (permitted, no key).
     const wikiSlug = encodeURIComponent(subject.replace(/\s+/g, "_"));
     const wikiUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${wikiSlug}`;
-    const wiki = await timedFetchJson("wikipedia.summary", wikiUrl, { "user-agent": UA }, 10000);
+    const wiki = await timedFetchJson("wikipedia.summary", wikiUrl, { "user-agent": UA }, 10000, reporter);
     toolCalls.push(wiki.call);
 
     let summary: SummarySection | null = null;
@@ -179,7 +181,7 @@ export const researchAgent: Agent = {
 
     // Tool 2: Nominatim geocoding (permitted, no key; identifying UA per policy).
     const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(subject)}&format=jsonv2&limit=1`;
-    const nom = await timedFetchJson("nominatim.search", nomUrl, { "user-agent": UA }, 10000);
+    const nom = await timedFetchJson("nominatim.search", nomUrl, { "user-agent": UA }, 10000, reporter);
     toolCalls.push(nom.call);
 
     let place: PlaceSection | null = null;

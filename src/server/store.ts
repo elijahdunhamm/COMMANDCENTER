@@ -5,6 +5,7 @@ import type {
   AgentSpec,
   Intent,
   Message,
+  OrchestrationEvent,
   RegisteredAgent,
   ResultPayload,
   ResultRecord,
@@ -80,6 +81,13 @@ export interface Store {
   getAgent(id: string): Promise<RegisteredAgent | null>;
   listAgents(): Promise<RegisteredAgent[]>;
   setAgentEnabled(id: string, enabled: boolean): Promise<RegisteredAgent | null>;
+
+  /** Orchestration events, appended in real time as steps happen. */
+  appendEvent(e: Omit<OrchestrationEvent, "seq">): Promise<OrchestrationEvent>;
+  /** Everything after the cursor, ascending by seq. Ephemeral mode keeps a
+   *  bounded ring buffer, so a cursor older than the buffer can miss events. */
+  listEventsSince(seq: number, limit: number): Promise<OrchestrationEvent[]>;
+  listEventsForTask(taskId: string): Promise<OrchestrationEvent[]>;
 }
 
 const nowIso = (): string => new Date().toISOString();
@@ -99,6 +107,11 @@ class MemoryStore implements Store {
   private results = new Map<string, ResultRecord>();
   private agents = new Map<string, RegisteredAgent>();
   private saved = new Map<string, SavedRecord>(); // keyed by result_id: save is idempotent
+  /** Ring buffer of orchestration events. Oldest entries fall off once the
+   *  cap is hit; seq stays monotonic so stream cursors remain meaningful. */
+  private events: OrchestrationEvent[] = [];
+  private eventSeq = 0;
+  private static readonly EVENT_RING_CAP = 2000;
 
   async ensureReady(): Promise<void> {}
   info(): StorageInfo {
@@ -265,6 +278,29 @@ class MemoryStore implements Store {
     const next = { ...a, enabled };
     this.agents.set(id, next);
     return { ...next };
+  }
+
+  async appendEvent(e: Omit<OrchestrationEvent, "seq">): Promise<OrchestrationEvent> {
+    this.eventSeq += 1;
+    const rec: OrchestrationEvent = { ...e, seq: this.eventSeq };
+    this.events.push(rec);
+    if (this.events.length > MemoryStore.EVENT_RING_CAP) {
+      this.events.splice(0, this.events.length - MemoryStore.EVENT_RING_CAP);
+    }
+    return { ...rec, data: { ...rec.data } };
+  }
+
+  async listEventsSince(seq: number, limit: number): Promise<OrchestrationEvent[]> {
+    return this.events
+      .filter((e) => e.seq > seq)
+      .slice(0, limit)
+      .map((e) => ({ ...e, data: { ...e.data } }));
+  }
+
+  async listEventsForTask(taskId: string): Promise<OrchestrationEvent[]> {
+    return this.events
+      .filter((e) => e.taskId === taskId)
+      .map((e) => ({ ...e, data: { ...e.data } }));
   }
 }
 
@@ -610,6 +646,51 @@ class PostgresStore implements Store {
   async deleteSaved(id: string): Promise<boolean> {
     const rows = await this.q()`DELETE FROM saved_items WHERE id = ${id} RETURNING id`;
     return rows.length > 0;
+  }
+
+  async appendEvent(e: Omit<OrchestrationEvent, "seq">): Promise<OrchestrationEvent> {
+    const rows = await this.q()`
+      INSERT INTO events (id, type, task_id, run_id, agent_id, at, data)
+      VALUES (${e.id}, ${e.type}, ${e.taskId}, ${e.runId}, ${e.agentId}, ${e.at}, ${JSON.stringify(e.data)}::jsonb)
+      RETURNING seq, id, type, task_id, run_id, agent_id, at, data`;
+    const r = rows[0];
+    return {
+      seq: Number(r.seq),
+      id: String(r.id),
+      type: r.type as OrchestrationEvent["type"],
+      taskId: r.task_id == null ? null : String(r.task_id),
+      runId: r.run_id == null ? null : String(r.run_id),
+      agentId: (r.agent_id as OrchestrationEvent["agentId"]) ?? null,
+      at: this.ts(r.at),
+      data: (r.data as Record<string, unknown>) ?? {},
+    };
+  }
+
+  async listEventsSince(seq: number, limit: number): Promise<OrchestrationEvent[]> {
+    const rows = await this.q()`
+      SELECT seq, id, type, task_id, run_id, agent_id, at, data
+      FROM events WHERE seq > ${seq} ORDER BY seq ASC LIMIT ${limit}`;
+    return rows.map((r) => this.rowToEvent(r));
+  }
+
+  async listEventsForTask(taskId: string): Promise<OrchestrationEvent[]> {
+    const rows = await this.q()`
+      SELECT seq, id, type, task_id, run_id, agent_id, at, data
+      FROM events WHERE task_id = ${taskId} ORDER BY seq ASC`;
+    return rows.map((r) => this.rowToEvent(r));
+  }
+
+  private rowToEvent(r: Record<string, unknown>): OrchestrationEvent {
+    return {
+      seq: Number(r.seq),
+      id: String(r.id),
+      type: r.type as OrchestrationEvent["type"],
+      taskId: r.task_id == null ? null : String(r.task_id),
+      runId: r.run_id == null ? null : String(r.run_id),
+      agentId: (r.agent_id as OrchestrationEvent["agentId"]) ?? null,
+      at: this.ts(r.at),
+      data: (r.data as Record<string, unknown>) ?? {},
+    };
   }
 }
 

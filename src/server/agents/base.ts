@@ -1,8 +1,19 @@
 import type { AgentSpec, Task, ToolCall, ResultPayload } from "../types";
 
+/** Real-time tool-call reporting. The Manager passes an implementation that
+ *  emits orchestration events; agents call it as each call starts and ends.
+ *  Optional: agents must work correctly without one (tests, direct use). */
+export interface ToolCallReporter {
+  /** Fired immediately before the tool performs its work. */
+  started(call: { tool: string; request: string }): void;
+  /** Fired as soon as the tool finished, with the real outcome. */
+  finished(call: ToolCall): void;
+}
+
 export interface ExecutionContext {
   /** Short noun phrase the Manager extracted from the command. */
   subject: string;
+  reporter?: ToolCallReporter;
 }
 
 export interface AgentExecution {
