@@ -294,18 +294,26 @@ export const dealfinderAgent: Agent = {
       error: outcome.error ?? undefined,
     });
 
+    // Honest provenance: when a fallback endpoint served the search instead
+    // of the preferred one, the result says so in one plain line.
+    if (outcome.ok && outcome.fallbackUsed && outcome.servedBy) {
+      notes.push(
+        `The preferred Overpass endpoint did not answer, so this search was served by the fallback endpoint ${outcome.servedBy}.`,
+      );
+    }
     const result = emptyResult(command, parsed);
     result.origin = origin;
     result.overpassUrl = outcome.url;
     result.servedFromCache = outcome.fromCache;
 
     if (!outcome.ok) {
-      // Honest unavailable state: retries exhausted, nothing usable came back.
+      // Honest unavailable state: every endpoint in the chain was tried, in
+      // order, and none returned usable data.
       result.sourceUnavailable = true;
       result.notes = [
         ...notes,
         `The OpenStreetMap Overpass search source is unavailable right now, so no results could be fetched. ` +
-          `${outcome.error ?? "Unknown error."} The exact request attempted: ${outcome.url}`,
+          `${outcome.error ?? "Unknown error."} The preferred request attempted: ${outcome.url}`,
       ];
       return {
         status: "completed",
@@ -313,8 +321,8 @@ export const dealfinderAgent: Agent = {
         toolCalls,
         error: null,
         summary:
-          "Search source unavailable: the Overpass request did not return usable data after a retry. " +
-          "No results were fabricated; the structured result carries the error and the exact request URL.",
+          "Search source unavailable: every known Overpass endpoint was tried and none returned usable data. " +
+          "No results were fabricated; the structured result carries the error and every endpoint that was tried.",
       };
     }
 
