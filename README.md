@@ -6,7 +6,8 @@ it to a specialist agent, the agent does real work with permitted tools, and a
 structured result with provenance is persisted and displayed.
 
 **This is not a mockup.** The Research Agent really calls Wikipedia and
-OpenStreetMap. Scaffolded agents really decline work they cannot do. Disabled
+OpenStreetMap. The DealFinder Agent really searches OpenStreetMap via the
+Overpass API for nearby businesses. Scaffolded agents really decline work they cannot do. Disabled
 agents really refuse tasks instead of quietly running. Statuses really reflect
 what happened.
 
@@ -32,7 +33,7 @@ src/
   routes/agents.tsx         Agent registry with enable/disable controls
   routes/settings.tsx       Env var status (set/missing only), storage mode, router mode
   components/layout.tsx     Shared header/nav + honest storage banner
-  components/results.tsx    Result cards (research brief, refusal, capability missing) + save control
+  components/results.tsx    Result cards (research brief, dealfinder search, refusal, capability missing) + save control
   components/chat.tsx       Command feed renderer
   components/panels.tsx     Agents + task history panels on the dashboard
   components/status.tsx     Status badges, skeletons, time/duration helpers
@@ -40,7 +41,10 @@ src/
   server/manager.ts         Manager Agent: interpret, classify, route, track, report; task detail/history, saved library, agent toggles
   server/model.ts           Model adapter: env-configurable LLM + deterministic fallback router
   server/agents/index.ts    Agent registry (agents are configuration) + Research Agent
+  server/agents/dealfinder.ts DealFinder Agent: local-service search with provenance and honest unverified states
   server/agents/base.ts     Agent contract + honest "awaiting capability" scaffold
+  server/dealfinder/parser.ts Deterministic command parser (service, specialties, radius, price cap, location)
+  server/dealfinder/overpass.ts Overpass connector (timeout, retry, cache, honest outcomes)
   server/store.ts           Storage: Postgres (DATABASE_URL) or clearly-labeled ephemeral memory
   server/schema.ts          Schema (runtime source of truth; mirrored in migrations/0001_init.sql)
   server/types.ts           Agent, Task, AgentRun, ToolCall, Result, Message, SavedRecord types
@@ -65,10 +69,11 @@ client bundle (the build emits them as separate server chunks).
    `working`. If that agent is disabled, the task is refused: the run is recorded
    as failed with zero tool calls, an `agent.disabled` result is persisted, and
    the feed says why. Nothing is executed behind an off switch.
-4. The agent executes with permitted tools. The Research Agent (the one
-   functional capability) calls the Wikipedia REST summary API and Nominatim
-   geocoding, both key-free, both logged as tool calls with request URL, status,
-   and duration.
+4. The agent executes with permitted tools. The Research Agent calls the
+   Wikipedia REST summary API and Nominatim geocoding, both key-free, both
+   logged as tool calls with request URL, status, and duration. The DealFinder
+   Agent geocodes an explicit place via Nominatim when needed and searches
+   OpenStreetMap via Overpass (see the DealFinder section below).
 5. A structured result is persisted. Every externally-sourced field carries
    provenance: source name, request URL, fetched-at timestamp. When nothing
    could be verified, the result says so instead of filling the gap.
@@ -143,6 +148,79 @@ same result twice returns the existing record (unique index on `result_id` in
 Postgres, keyed map in ephemeral mode). Only research results are savable;
 refusals and capability-missing records are not, and the control says so.
 
+## DealFinder Agent (local-service search)
+
+The owner's original product concept, alive as an agent: type
+"Find me a low-taper barber within 10 miles under $40" and get real, nearby
+businesses from OpenStreetMap, ranked by distance, with provenance and honest
+unverified states.
+
+**Parsing (deterministic, no LLM, in `src/server/dealfinder/parser.ts`):**
+
+- Service type via an extensible keyword map (`SERVICE_TYPES`): barber and
+  hairdresser first; add an entry (label + OSM tag selectors + keywords) to
+  cover more services.
+- Specialty phrases ("low taper", "fade", "beard trim", ...) are captured and
+  displayed, and are ALWAYS marked not searchable: OpenStreetMap does not index
+  hairstyles, so they can never filter or rank real results
+  (`specialtySearchable: false` in the payload).
+- Radius: "within N miles/km", default 10 miles (the result says whether the
+  radius came from the command or the default).
+- Price cap: "under $X" (also "below/less than/cheaper than", with a currency
+  word when the dollar sign is absent). Used only for honesty, never for
+  filtering: see prices below.
+- Location: inline coordinates ("near 30.2672, -97.7431"), else an explicit
+  place name ("near downtown Austin") geocoded via Nominatim, else a structured
+  ask-for-location result. "Near me" is honestly unresolvable (the dashboard
+  has no access to your location) and asks instead of guessing.
+
+**Overpass usage (`src/server/dealfinder/overpass.ts`):**
+
+- One union query per search over a radius bounding box:
+  `node["shop"="hairdresser"]` + `node["shop"="beauty"]["beauty"="hairdresser"]`
+  + `node["hairdresser:styling_type"="barber"]`, `[out:json][timeout:20]`,
+  `out center 50` (element limit).
+- GET (not POST) so the provenance request URL is openable by the owner, and an
+  identifying `User-Agent` on every call.
+- Built for a source that degrades: 25s client timeout, exactly one retry after
+  a 1.5s backoff, and an in-process cache (10 min TTL, LRU-capped) so identical
+  queries never re-hit the network. HTTP 200 with an empty or unparseable body
+  counts as a failure (a known overpass-api.de behavior under load), not as
+  "no results".
+- Outcomes are honest and distinct: usable data (even 0 elements = genuinely
+  empty area, stated with the request URL), or `sourceUnavailable` after
+  retries with the error and the exact attempted URL. Nothing is papered over.
+- Endpoint is modular: `OVERPASS_URL` (optional) overrides the default
+  `https://overpass-api.de/api/interpreter` (e.g. a public mirror while the
+  primary is degraded). Provenance always records the URL actually used.
+
+**Normalization and honesty in results:**
+
+- Each hit: name, real OSM tag summary (category), coordinates, computed
+  haversine distance (labeled computed), address, phone, website, opening hours
+  when OSM has them, and an explicit "not listed" (null) when it does not.
+- Hits beyond the radius are dropped (the bbox is square, the request is a
+  circle), and the rest are ranked nearest first.
+- Each hit carries a "why this matches" line built only from real dimensions:
+  computed distance vs the radius, the OSM tags that matched, price-check
+  unavailable, specialty unsearchable.
+- Per-hit provenance: source ("OpenStreetMap via Overpass API"), the exact
+  request URL, fetched-at. Plus a link to the OSM object itself.
+- **Price is never invented.** Every hit's price is `verified: false`,
+  display "not verified", with an explanation (OSM carries no price data). When
+  a price cap was requested, the result states plainly that prices could not be
+  checked, so the cap was not applied and no result is price-verified.
+- Result kind `dealfinder.search` is rendered in the feed and task timeline as
+  a comparison-ready list; the empty-area, source-unavailable, and
+  ask-for-location outcomes each get their own honest panel.
+
+Payload shape (abridged): `kind`, `command`, `service`, `specialties`,
+`specialtySearchable: false`, `radiusMiles`, `radiusSource`, `maxPrice`,
+`origin`, `askedForLocation`, `sourceUnavailable`, `servedFromCache`,
+`overpassUrl`, `results[]`, `notes[]`; each result carries `osmType`, `osmId`,
+`osmUrl`, `name`, `category`, `lat`, `lon`, `distanceMiles`, `distanceKm`,
+`address`, `phone`, `website`, `openingHours`, `price`, `why`, `provenance`.
+
 ## Environment variables
 
 | Variable | Purpose | If missing |
@@ -151,6 +229,7 @@ refusals and capability-missing records are not, and the control says so.
 | `LLM_BASE_URL` | OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` | Deterministic fallback router is used |
 | `LLM_API_KEY` | Key for the model provider | Same as above |
 | `LLM_MODEL` | Model name the provider expects (e.g. `gpt-4o-mini`) | Same as above |
+| `OVERPASS_URL` (optional) | Override the Overpass endpoint (default `https://overpass-api.de/api/interpreter`), e.g. a mirror while the primary is degraded | Default endpoint is used |
 
 Secrets are read from `process.env` in server-only code, never in client code,
 never in a `.env` file. The settings page shows only whether each variable is
@@ -195,7 +274,12 @@ assembly, the saved-research CRUD cycle (save, idempotent re-save, refusal to
 save non-research, delete, honest delete-of-missing error), and the agent
 disable flow (Manager un-disablable, research agent disabled, refused task with
 an `agent.disabled` result and zero tool calls, re-enable, honest status
-derivation afterwards).
+derivation afterwards), and the DealFinder Agent: parser unit checks, a real
+Overpass search near Austin center coordinates with provenance and
+distance assertions, price-cap honesty, the structured ask-for-location
+outcome, and the event log. The dealfinder checks tolerate Overpass
+degradation explicitly (they assert honesty, not uptime), and the hit-branch
+checks only fire when the source actually answered.
 
 ## Design notes
 
@@ -220,5 +304,9 @@ and dials.
   (stated in the UI on every affected page).
 - Research Agent scope is deliberately small: one summary API, one geocoder.
   Deeper multi-source synthesis is future work.
+- DealFinder search is only as good as OpenStreetMap coverage in the area;
+  the result says when nothing was found rather than padding the list.
+  Distances are straight-line (haversine), not driving times, and prices are
+  never shown as verified because OSM carries no price data.
 - The tasks list page reads up to 200 tasks per view; older history stays in the
   store and remains reachable by direct task links.
