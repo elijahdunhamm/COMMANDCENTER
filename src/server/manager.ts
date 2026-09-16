@@ -9,8 +9,11 @@ import type {
   AgentStatus,
   AgentView,
   Message,
+  RegisteredAgent,
   ResultRecord,
+  SavedRecord,
   Task,
+  TaskDetail,
 } from "./types";
 
 /**
@@ -72,6 +75,37 @@ export async function executeCommand(
     `Classified intent "${classification.intent}" via ${routerLabel}: ${classification.reasoning}. ` +
       `Routing to ${agent.spec.name}.`,
   );
+
+  // 2b. A disabled agent refuses the task. The refusal is a real recorded run
+  // with zero tool calls and an explicit result: nothing is executed, and the
+  // owner sees exactly why in the feed.
+  const registered = await store.getAgent(agent.spec.id);
+  if (registered && !registered.enabled) {
+    const run = await store.createRun(task.id, agent.spec.id);
+    const refusal =
+      `${agent.spec.name} is disabled, so this task was refused and nothing was executed. ` +
+      `No tools were called and no result was produced. Re-enable the agent on the Agents page ` +
+      `to route tasks to it again.`;
+    await store.updateRun(run.id, {
+      status: "failed",
+      toolCalls: [],
+      error: "agent disabled by owner; task refused",
+      finishedAt: new Date().toISOString(),
+    });
+    await store.saveResult({
+      taskId: task.id,
+      runId: run.id,
+      agentId: agent.spec.id,
+      kind: "agent.disabled",
+      payload: { kind: "agent.disabled", agentId: agent.spec.id, message: refusal },
+    });
+    await store.updateTask(task.id, {
+      status: "failed",
+      error: `${agent.spec.name} is disabled; the task was refused`,
+    });
+    await store.createMessage(task.id, "manager", refusal);
+    return { ok: true, taskId: task.id };
+  }
 
   // 3. Run the agent with real status tracking.
   const run = await store.createRun(task.id, agent.spec.id);
@@ -148,13 +182,17 @@ export async function executeCommand(
 
 function deriveAgentStatus(
   specId: string,
+  enabled: boolean,
   runs: AgentRun[],
   isManagerInFlight: boolean,
 ): AgentStatus {
   if (specId === "manager") return isManagerInFlight ? "working" : "idle";
   const mine = runs.filter((r) => r.agentId === specId);
   const active = mine.find((r) => r.status === "working" && inFlight.has(r.taskId));
+  // Honest precedence: a run actually in flight wins, even if the owner just
+  // flipped the switch; otherwise the owner's disabled state shows as such.
   if (active) return "working";
+  if (!enabled) return "disabled";
   if (mine.length === 0) return "idle";
   const last = mine[0]; // listRecentRuns is newest-first
   if (last.status === "completed") return "completed";
@@ -165,15 +203,18 @@ function deriveAgentStatus(
 }
 
 export function buildAgentViews(
+  registered: RegisteredAgent[],
   runs: AgentRun[],
   isManagerInFlight: boolean,
 ): AgentView[] {
+  const enabledById = new Map(registered.map((r) => [r.id, r.enabled]));
   return AGENT_SPECS.map((spec) => {
     const mine = runs.filter((r) => r.agentId === spec.id);
     const active = mine.find((r) => r.status === "working" && inFlight.has(r.taskId));
     return {
       ...spec,
-      status: deriveAgentStatus(spec.id, runs, isManagerInFlight),
+      enabled: enabledById.get(spec.id) ?? true,
+      status: deriveAgentStatus(spec.id, enabledById.get(spec.id) ?? true, runs, isManagerInFlight),
       lastRunAt: mine[0]?.startedAt ?? null,
       activeTaskId: active?.taskId ?? null,
     };
@@ -190,6 +231,24 @@ export interface DashboardState {
   messages: Message[];
   results: Record<string, ResultRecord>;
   runs: Record<string, AgentRun[]>;
+  /** Saved-library entry per task id, so the UI can show honest save state. */
+  savedByTask: Record<string, SavedRecord>;
+}
+
+/** Shared tail: sync registry, load runs, derive agent views. */
+async function loadCore(store: ReturnType<typeof getStore>): Promise<{
+  storage: StorageInfo;
+  agents: AgentView[];
+  runs: AgentRun[];
+}> {
+  await store.ensureReady();
+  await syncRegistry();
+  const [registered, runs] = await Promise.all([store.listAgents(), store.listRecentRuns(200)]);
+  return {
+    storage: store.info(),
+    agents: buildAgentViews(registered, runs, inFlight.size > 0),
+    runs,
+  };
 }
 
 export async function getDashboardState(): Promise<DashboardState> {
@@ -207,19 +266,26 @@ export async function getDashboardState(): Promise<DashboardState> {
         error: err instanceof Error ? err.message : String(err),
       },
       env: getEnvStatus(),
-      agents: AGENT_SPECS.map((spec) => ({ ...spec, status: "idle", lastRunAt: null, activeTaskId: null })),
+      agents: AGENT_SPECS.map((spec) => ({
+        ...spec,
+        enabled: true,
+        status: "idle",
+        lastRunAt: null,
+        activeTaskId: null,
+      })),
       tasks: [],
       messages: [],
       results: {},
       runs: {},
+      savedByTask: {},
     };
   }
 
-  const [tasks, messages, runs, managerWaiting] = await Promise.all([
+  const [tasks, messages, runs, saved] = await Promise.all([
     store.listTasks(30),
     store.listMessages(80),
     store.listRecentRuns(120),
-    Promise.resolve(inFlight.size > 0),
+    store.listSaved(),
   ]);
 
   const results: Record<string, ResultRecord> = {};
@@ -231,16 +297,239 @@ export async function getDashboardState(): Promise<DashboardState> {
   for (const r of [...runs].reverse()) {
     (runsByTask[r.taskId] ??= []).push(r);
   }
+  // listSaved is newest-first, so the first hit per task is the newest save.
+  const savedByTask: Record<string, SavedRecord> = {};
+  for (const s of saved) {
+    if (!savedByTask[s.taskId]) savedByTask[s.taskId] = s;
+  }
 
   return {
     storage,
     env: getEnvStatus(),
-    agents: buildAgentViews(runs, managerWaiting),
+    agents: buildAgentViews(await store.listAgents(), runs, inFlight.size > 0),
     tasks,
     messages,
     results,
     runs: runsByTask,
+    savedByTask,
   };
+}
+
+/* --------------------------------------------------------- task history */
+
+export interface TaskHistoryState {
+  storage: StorageInfo;
+  tasks: Task[];
+}
+
+/** Full browsable history (newest first). Both store modes serve this. */
+export async function getTaskHistory(limit = 200): Promise<TaskHistoryState> {
+  const store = getStore();
+  try {
+    await store.ensureReady();
+    await syncRegistry();
+    return { storage: store.info(), tasks: await store.listTasks(limit) };
+  } catch (err) {
+    return {
+      storage: {
+        mode: store.mode,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      tasks: [],
+    };
+  }
+}
+
+export interface TaskDetailResponse {
+  ok: boolean;
+  detail: TaskDetail | null;
+  error: string | null;
+}
+
+/** Complete record of one task: command, classification, runs, tool calls,
+ *  messages, and final result. Works in both store modes. */
+export async function getTaskDetail(taskId: string): Promise<TaskDetailResponse> {
+  const store = getStore();
+  try {
+    await store.ensureReady();
+  } catch (err) {
+    return {
+      ok: false,
+      detail: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const task = await store.getTask(taskId);
+  if (!task) return { ok: true, detail: null, error: null };
+  const [runs, messages, result] = await Promise.all([
+    store.listRunsForTask(taskId),
+    store.listMessagesForTask(taskId),
+    store.getResultForTask(taskId),
+  ]);
+  return { ok: true, detail: { task, runs, messages, result }, error: null };
+}
+
+/* -------------------------------------------------------- agents state */
+
+export interface AgentsState {
+  storage: StorageInfo;
+  env: ReturnType<typeof getEnvStatus>;
+  agents: AgentView[];
+}
+
+export async function getAgentsState(): Promise<AgentsState> {
+  const store = getStore();
+  try {
+    const core = await loadCore(store);
+    return { ...core, env: getEnvStatus() };
+  } catch (err) {
+    return {
+      storage: {
+        mode: store.mode,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      env: getEnvStatus(),
+      agents: AGENT_SPECS.map((spec) => ({
+        ...spec,
+        enabled: true,
+        status: "idle",
+        lastRunAt: null,
+        activeTaskId: null,
+      })),
+    };
+  }
+}
+
+export interface AgentToggleResponse {
+  ok: boolean;
+  error: string | null;
+  agent: RegisteredAgent | null;
+}
+
+/**
+ * The owner's enable/disable control. The Manager Agent cannot be disabled:
+ * it is the router every task passes through, so turning it off would only
+ * break the pipeline without an honest meaning.
+ */
+export async function setAgentEnabledState(
+  agentId: string,
+  enabled: boolean,
+): Promise<AgentToggleResponse> {
+  if (agentId === "manager") {
+    return {
+      ok: false,
+      error:
+        "The Manager Agent cannot be disabled. It classifies and routes every task; without it no command can run.",
+      agent: null,
+    };
+  }
+  const store = getStore();
+  try {
+    await store.ensureReady();
+    await syncRegistry();
+  } catch (err) {
+    return {
+      ok: false,
+      error: `storage unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      agent: null,
+    };
+  }
+  const updated = await store.setAgentEnabled(agentId, enabled);
+  if (!updated) {
+    return { ok: false, error: `No registered agent with id "${agentId}".`, agent: null };
+  }
+  return { ok: true, error: null, agent: updated };
+}
+
+/* ------------------------------------------------------ saved research */
+
+export interface SavedLibraryState {
+  storage: StorageInfo;
+  items: SavedRecord[];
+}
+
+export async function getSavedLibrary(): Promise<SavedLibraryState> {
+  const store = getStore();
+  try {
+    await store.ensureReady();
+    return { storage: store.info(), items: await store.listSaved() };
+  } catch (err) {
+    return {
+      storage: {
+        mode: store.mode,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      items: [],
+    };
+  }
+}
+
+export interface SaveResultResponse {
+  ok: boolean;
+  savedId: string | null;
+  error: string | null;
+}
+
+/**
+ * Saves a completed research result to the library. Only research briefs are
+ * savable (refusals and capability-missing records are not research). Saving
+ * the same result twice is idempotent: the existing record comes back.
+ */
+export async function saveResultToLibrary(taskId: string): Promise<SaveResultResponse> {
+  const store = getStore();
+  try {
+    await store.ensureReady();
+  } catch (err) {
+    return {
+      ok: false,
+      savedId: null,
+      error: `storage unavailable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const result = await store.getResultForTask(taskId);
+  if (!result) {
+    return { ok: false, savedId: null, error: "This task has no result to save." };
+  }
+  if (result.payload.kind !== "research.brief") {
+    return {
+      ok: false,
+      savedId: null,
+      error: "Only research results can be saved to the library. This result is not one.",
+    };
+  }
+  const rec = await store.saveToLibrary({
+    resultId: result.id,
+    taskId: result.taskId,
+    agentId: result.agentId,
+    kind: result.kind,
+    payload: result.payload,
+  });
+  return { ok: true, savedId: rec.id, error: null };
+}
+
+export interface DeleteSavedResponse {
+  ok: boolean;
+  error: string | null;
+}
+
+export async function deleteSavedResearch(id: string): Promise<DeleteSavedResponse> {
+  const store = getStore();
+  try {
+    await store.ensureReady();
+  } catch (err) {
+    return {
+      ok: false,
+      error: `storage unavailable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const deleted = await store.deleteSaved(id);
+  if (!deleted) {
+    return { ok: false, error: "No saved item with that id. It may already have been deleted." };
+  }
+  return { ok: true, error: null };
 }
 
 export { managerSpec };

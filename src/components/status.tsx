@@ -11,6 +11,7 @@ export const AGENT_STATUS_STYLES: Record<AgentStatus, { dot: string; text: strin
   waiting: { dot: "bg-wait", text: "text-wait", label: "waiting" },
   completed: { dot: "bg-ok", text: "text-ok", label: "completed" },
   failed: { dot: "bg-err", text: "text-err", label: "failed" },
+  disabled: { dot: "bg-[#5b6371]", text: "text-muted", label: "disabled" },
 };
 
 export const TASK_STATUS_STYLES: Record<TaskStatus, { dot: string; text: string; label: string }> = {

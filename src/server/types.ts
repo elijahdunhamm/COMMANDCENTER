@@ -10,8 +10,9 @@ export type AgentId = "manager" | "research" | "coding" | "opportunity" | "dealf
 
 export type Intent = "research" | "coding" | "opportunity" | "dealfinder";
 
-/** Agent lifecycle status. Always derived from real runs, never assumed. */
-export type AgentStatus = "idle" | "working" | "waiting" | "completed" | "failed";
+/** Agent lifecycle status. Always derived from real runs, never assumed.
+ *  "disabled" is the owner's deliberate off state, never a hidden error. */
+export type AgentStatus = "idle" | "working" | "waiting" | "completed" | "failed" | "disabled";
 
 export type TaskStatus = "queued" | "working" | "completed" | "failed";
 
@@ -47,6 +48,13 @@ export interface CapabilityMissingResult {
   message: string;
 }
 
+/** A refusal recorded when the owner disabled the agent. Nothing was executed. */
+export interface DisabledAgentResult {
+  kind: "agent.disabled";
+  agentId: AgentId;
+  message: string;
+}
+
 export interface SummarySection {
   text: string | null;
   title: string | null;
@@ -73,7 +81,10 @@ export interface ResearchBriefResult {
   notes: string[];
 }
 
-export type ResultPayload = ResearchBriefResult | CapabilityMissingResult;
+export type ResultPayload =
+  | ResearchBriefResult
+  | CapabilityMissingResult
+  | DisabledAgentResult;
 
 /** Static registry entry. Agents are configuration, not hard-wired paths. */
 export interface AgentSpec {
@@ -86,6 +97,12 @@ export interface AgentSpec {
   /** Human-readable list of what actually works. */
   capabilities: string[];
   handlesIntents: Intent[];
+}
+
+/** Registry entry plus the owner's enable/disable control. The Manager Agent
+ *  cannot be disabled: it is the router every task passes through. */
+export interface RegisteredAgent extends AgentSpec {
+  enabled: boolean;
 }
 
 export interface Task {
@@ -130,8 +147,29 @@ export interface ResultRecord {
   createdAt: string;
 }
 
+/** A research result the owner explicitly saved to the library. The payload is
+ *  a copy taken at save time, provenance included; deleting the original task
+ *  history does not alter it. */
+export interface SavedRecord {
+  id: string;
+  resultId: string;
+  taskId: string;
+  agentId: AgentId;
+  kind: ResultPayload["kind"];
+  payload: ResultPayload;
+  createdAt: string;
+}
+
+/** Everything persisted about one task, for the detail timeline view. */
+export interface TaskDetail {
+  task: Task;
+  runs: AgentRun[];
+  messages: Message[];
+  result: ResultRecord | null;
+}
+
 /** Live agent view: registry info plus a status derived from real runs. */
-export interface AgentView extends AgentSpec {
+export interface AgentView extends RegisteredAgent {
   status: AgentStatus;
   lastRunAt: string | null;
   activeTaskId: string | null;

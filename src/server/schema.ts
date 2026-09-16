@@ -15,9 +15,13 @@ CREATE TABLE IF NOT EXISTS agents (
   capability    TEXT NOT NULL,
   capabilities  JSONB NOT NULL DEFAULT '[]'::jsonb,
   handles_intents JSONB NOT NULL DEFAULT '[]'::jsonb,
+  enabled       BOOLEAN NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- For databases created before the enable/disable control existed.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id          TEXT PRIMARY KEY,
@@ -66,9 +70,21 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS saved_items (
+  id         TEXT PRIMARY KEY,
+  result_id  TEXT NOT NULL,
+  task_id    TEXT NOT NULL,
+  agent_id   TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  payload    JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON agent_runs (task_id);
 CREATE INDEX IF NOT EXISTS idx_runs_agent ON agent_runs (agent_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_results_task ON results (task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_results ON saved_items (result_id);
+CREATE INDEX IF NOT EXISTS idx_saved_created ON saved_items (created_at DESC);
 `;
