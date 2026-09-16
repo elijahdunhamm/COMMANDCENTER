@@ -3,7 +3,7 @@
  *
  * Contract: an agent receives a task, uses permitted tools, produces a
  * structured result, and reports to the Manager Agent. Statuses reflect
- * reality only — nothing here is ever faked.
+ * reality only; nothing here is ever faked.
  */
 
 export type AgentId = "manager" | "research" | "coding" | "opportunity" | "dealfinder";
