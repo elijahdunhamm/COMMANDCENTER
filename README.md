@@ -182,17 +182,23 @@ unverified states.
   `out center 50` (element limit).
 - GET (not POST) so the provenance request URL is openable by the owner, and an
   identifying `User-Agent` on every call.
-- Built for a source that degrades: 25s client timeout, exactly one retry after
-  a 1.5s backoff, and an in-process cache (10 min TTL, LRU-capped) so identical
-  queries never re-hit the network. HTTP 200 with an empty or unparseable body
-  counts as a failure (a known overpass-api.de behavior under load), not as
-  "no results".
+- Built for a source that degrades: 25s client timeout per attempt and an
+  in-process cache (10 min TTL, LRU-capped) so identical queries never re-hit
+  the network. HTTP 200 with an empty or unparseable body counts as a failure
+  (a known overpass-api.de behavior under load), not as "no results".
 - Outcomes are honest and distinct: usable data (even 0 elements = genuinely
-  empty area, stated with the request URL), or `sourceUnavailable` after
-  retries with the error and the exact attempted URL. Nothing is papered over.
-- Endpoint is modular: `OVERPASS_URL` (optional) overrides the default
-  `https://overpass-api.de/api/interpreter` (e.g. a public mirror while the
-  primary is degraded). Provenance always records the URL actually used.
+  empty area, stated with the request URL), or `sourceUnavailable` only after
+  every endpoint in the chain was tried, listing each one. Nothing is papered
+  over.
+- Endpoint fallback order: `OVERPASS_URL` (optional) takes precedence as the
+  first candidate when set, then the default
+  `https://overpass-api.de/api/interpreter`, then the public mirrors
+  `https://overpass.kumi.systems/api/interpreter` and
+  `https://overpass.private.coffee/api/interpreter` (list is deduplicated).
+  The first endpoint with a usable answer serves the whole search; the query
+  is never re-sent to later endpoints once one has answered. Provenance and
+  an honest one-line result note always record which endpoint actually
+  served the search.
 
 **Normalization and honesty in results:**
 

@@ -16,6 +16,7 @@
 import { executeCommand, getDashboardState, deleteSavedResearch, getEventsSince, getSavedLibrary, getTaskDetail, saveResultToLibrary, setAgentEnabledState } from "../src/server/manager";
 import { classifyWithFallback } from "../src/server/model";
 import { parseDealfinderQuery } from "../src/server/dealfinder/parser";
+import { overpassEndpointCandidates } from "../src/server/dealfinder/overpass";
 import type { DealFinderSearchResult, DisabledAgentResult, ResearchBriefResult } from "../src/server/types";
 
 let failures = 0;
@@ -373,6 +374,41 @@ async function main(): Promise<void> {
   const c4 = classifyWithFallback("Find a hairdresser near downtown Austin");
   check("fallback router classifies hairdresser search as dealfinder", c4.intent === "dealfinder", JSON.stringify(c4));
 
+  console.log("\n-- dealfinder: Overpass endpoint fallback list (no network) --");
+  const savedOverpassEnv = process.env.OVERPASS_URL;
+  try {
+    delete process.env.OVERPASS_URL;
+    const cDefault = overpassEndpointCandidates();
+    check(
+      "endpoint candidates: default first, then the two mirrors, in order",
+      JSON.stringify(cDefault) === JSON.stringify([
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+      ]),
+      JSON.stringify(cDefault),
+    );
+    process.env.OVERPASS_URL = "https://overpass.private.coffee/api/interpreter/";
+    const cOverride = overpassEndpointCandidates();
+    check(
+      "OVERPASS_URL override is normalized (trailing slash) and takes first position, deduplicated",
+      cOverride[0] === "https://overpass.private.coffee/api/interpreter" &&
+        cOverride.length === 3 &&
+        new Set(cOverride).size === cOverride.length,
+      JSON.stringify(cOverride),
+    );
+    process.env.OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+    const cDup = overpassEndpointCandidates();
+    check(
+      "override equal to the default is deduplicated, order preserved",
+      cDup.length === 3 && cDup[0] === "https://overpass-api.de/api/interpreter" && new Set(cDup).size === 3,
+      JSON.stringify(cDup),
+    );
+  } finally {
+    if (savedOverpassEnv === undefined) delete process.env.OVERPASS_URL;
+    else process.env.OVERPASS_URL = savedOverpassEnv;
+  }
+
   console.log("\n-- dealfinder: real search near Austin center coordinates --");
   const dres = await executeCommand("Find me a barber near 30.2672, -97.7431 within 10 miles");
   check("dealfinder command executed ok", dres.ok === true && Boolean(dres.taskId), JSON.stringify(dres));
@@ -415,6 +451,11 @@ async function main(): Promise<void> {
         Boolean(dpayload?.overpassUrl?.startsWith("https://")),
       JSON.stringify(dpayload?.notes),
     );
+    check(
+      "unavailable note lists every endpoint that was tried",
+      overpassEndpointCandidates().every((u) => (dpayload?.notes ?? []).some((n) => n.includes(u))),
+      JSON.stringify(dpayload?.notes),
+    );
     console.log("   (Overpass is degraded right now: the honest-unavailable path was verified)");
   }
   if (dHitBranch) {
@@ -454,6 +495,23 @@ async function main(): Promise<void> {
     check(
       "empty-area path explains itself and cites the request URL",
       (dpayload?.notes ?? []).some((n) => n.includes("No ")) && Boolean(dpayload?.overpassUrl?.startsWith("https://")),
+      JSON.stringify(dpayload?.notes),
+    );
+  }
+
+  check(
+    "recorded provenance URL belongs to one of the candidate endpoints (the one that answered)",
+    Boolean(dpayload?.overpassUrl) &&
+      overpassEndpointCandidates().some((u) => (dpayload?.overpassUrl ?? "").startsWith(u)),
+    JSON.stringify({ overpassUrl: dpayload?.overpassUrl, candidates: overpassEndpointCandidates() }),
+  );
+  const dFallbackServed =
+    Boolean(dpayload?.overpassUrl) &&
+    !dpayload!.overpassUrl!.startsWith(overpassEndpointCandidates()[0]);
+  if (dOverpassOk && dFallbackServed) {
+    check(
+      "when a fallback endpoint served the search, one honest note says so",
+      (dpayload?.notes ?? []).some((n) => n.includes("fallback endpoint")),
       JSON.stringify(dpayload?.notes),
     );
   }
