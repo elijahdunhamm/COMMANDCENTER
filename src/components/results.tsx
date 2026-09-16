@@ -1,10 +1,12 @@
-import { ArrowSquareOut, BookmarkSimple, MapPin, NoteBlank, WarningCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, BookmarkSimple, Clock, GlobeSimple, MapPin, NoteBlank, Phone, WarningCircle } from "@phosphor-icons/react";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 
 import { formatTime } from "~/components/status";
 import type {
   CapabilityMissingResult,
+  DealFinderHit,
+  DealFinderSearchResult,
   DisabledAgentResult,
   ResearchBriefResult,
   ResultPayload,
@@ -131,6 +133,215 @@ export function ResearchResultCard({ payload }: { payload: ResearchBriefResult }
   );
 }
 
+/** "not listed" is the honest rendering for fields OpenStreetMap does not carry. */
+function NotListed() {
+  return <span className="text-muted/70 italic">not listed</span>;
+}
+
+function DealFinderHitRow({ hit }: { hit: DealFinderHit }) {
+  return (
+    <li className="py-3.5 first:pt-0 last:pb-0">
+      <div className="flex items-baseline justify-between gap-3">
+        {hit.name ? (
+          <p className="text-sm font-semibold text-heading">{hit.name}</p>
+        ) : (
+          <p className="text-sm font-semibold text-heading/60 italic">Name not listed</p>
+        )}
+        <p className="mono shrink-0 text-xs text-accent" title="Computed straight-line distance from the search point">
+          {hit.distanceMiles.toFixed(1)} mi
+        </p>
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="mono text-[11px] text-muted">{hit.category}</span>
+        <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-[11px] text-wait">
+          price {hit.price.display}
+        </span>
+      </div>
+
+      <p className="mt-1.5 text-xs leading-relaxed text-muted">{hit.why}</p>
+
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+        <div className="flex items-start gap-1.5">
+          <dt className="flex items-center gap-1 text-muted">
+            <MapPin aria-hidden className="size-3 shrink-0" />
+            <span className="sr-only">Address</span>
+          </dt>
+          <dd className="text-body">{hit.address ?? <NotListed />}</dd>
+        </div>
+        <div className="flex items-start gap-1.5">
+          <dt className="flex items-center gap-1 text-muted">
+            <Phone aria-hidden className="size-3 shrink-0" />
+            <span className="sr-only">Phone</span>
+          </dt>
+          <dd className="text-body">
+            {hit.phone ?? <NotListed />}
+          </dd>
+        </div>
+        <div className="flex items-start gap-1.5">
+          <dt className="flex items-center gap-1 text-muted">
+            <GlobeSimple aria-hidden className="size-3 shrink-0" />
+            <span className="sr-only">Website</span>
+          </dt>
+          <dd>
+            {hit.website ? (
+              <a
+                href={hit.website}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent underline underline-offset-4 hover:text-heading"
+              >
+                {hit.website.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+                <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+              </a>
+            ) : (
+              <span className="text-body">
+                <NotListed />
+              </span>
+            )}
+          </dd>
+        </div>
+        <div className="flex items-start gap-1.5">
+          <dt className="flex items-center gap-1 text-muted">
+            <Clock aria-hidden className="size-3 shrink-0" />
+            <span className="sr-only">Opening hours</span>
+          </dt>
+          <dd className="text-body">{hit.openingHours ?? <NotListed />}</dd>
+        </div>
+      </dl>
+
+      <p className="mt-1.5 text-xs">
+        <a
+          href={hit.osmUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent underline underline-offset-4 hover:text-heading"
+        >
+          View on OpenStreetMap
+          <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+        </a>
+      </p>
+    </li>
+  );
+}
+
+export function DealFinderResultCard({ payload }: { payload: DealFinderSearchResult }) {
+  const serviceLabel = payload.service ? payload.service.label : "local service";
+  const radiusLabel = `${Number(payload.radiusMiles.toFixed(payload.radiusMiles % 1 === 0 ? 0 : 1))} mile radius`;
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-heading">
+        Local search: <span className="mono text-accent">{serviceLabel}</span>
+        {payload.origin ? (
+          <>
+            {" "}near <span className="mono text-accent">{payload.origin.label}</span>
+          </>
+        ) : null}
+      </h3>
+
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+        <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-muted">
+          {radiusLabel}
+          {payload.radiusSource === "default" ? " (default)" : ""}
+        </span>
+        {payload.maxPrice && (
+          <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-muted">
+            under ${payload.maxPrice.amount} (unapplied: prices unverifiable)
+          </span>
+        )}
+        {payload.specialties.length > 0 && (
+          <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-wait">
+            specialty "{payload.specialties.join('", "')}" captured, not searchable
+          </span>
+        )}
+        {payload.servedFromCache && (
+          <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-muted">
+            identical query served from in-process cache
+          </span>
+        )}
+      </div>
+
+      {payload.askedForLocation ? (
+        <p className="mt-3 flex items-start gap-2 rounded-[10px] border hairline bg-panel-2 p-3 text-sm leading-relaxed text-body">
+          <MapPin aria-hidden className="mt-0.5 size-4 shrink-0 text-wait" />
+          <span>
+            No location could be resolved from this command, so no search area was guessed.
+            Provide a place name (e.g. "near downtown Austin") or coordinates
+            (e.g. "near 30.2672, -97.7431") and run the command again.
+          </span>
+        </p>
+      ) : payload.sourceUnavailable ? (
+        <div className="mt-3 rounded-[10px] border border-err/40 bg-err/5 p-3">
+          <p className="flex items-start gap-2 text-sm leading-relaxed text-body">
+            <WarningCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-err" />
+            <span>
+              Search source unavailable. The OpenStreetMap Overpass request did not return
+              usable data after a retry, so no results could be fetched. Nothing was invented
+              to fill the gap; the exact request is linked below.
+            </span>
+          </p>
+          {payload.overpassUrl && (
+            <p className="mono mt-2 text-xs text-muted">
+              Attempted request:{" "}
+              <a
+                href={payload.overpassUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent underline underline-offset-4 hover:text-heading"
+              >
+                view request
+                <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+              </a>
+            </p>
+          )}
+        </div>
+      ) : payload.results.length === 0 ? (
+        <p className="mt-3 flex items-start gap-2 text-sm leading-relaxed text-muted">
+          <NoteBlank aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>
+            No matches were found in OpenStreetMap data for this area and radius. Coverage
+            varies by area; that is a property of the map data, not a filtered opinion.
+          </span>
+        </p>
+      ) : (
+        <div className="mt-3">
+          <p className="text-xs text-muted">
+            {payload.results.length} match{payload.results.length === 1 ? "" : "es"}, ranked by
+            computed distance from the search point.
+          </p>
+          <ul className="mt-1 divide-y hairline">
+            {payload.results.map((hit) => (
+              <DealFinderHitRow key={`${hit.osmType}-${hit.osmId}`} hit={hit} />
+            ))}
+          </ul>
+          {payload.overpassUrl && (
+            <div className="mt-3 border-t hairline pt-2">
+              <ProvenanceRow
+                label="All results"
+                source="OpenStreetMap via Overpass API"
+                url={payload.overpassUrl}
+                fetchedAt={payload.results[0]?.provenance.fetchedAt ?? new Date().toISOString()}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {payload.notes.length > 0 && (
+        <ul className="mt-4 space-y-1.5 border-t hairline pt-3">
+          {payload.notes.map((note, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-muted">
+              <WarningCircle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-wait" />
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function CapabilityMissingCard({ payload }: { payload: CapabilityMissingResult }) {
   return (
     <div>
@@ -220,6 +431,13 @@ export function ResultCard({ payload, taskId, saved, onSaveTask }: {
         {taskId && onSaveTask && (
           <SaveRow taskId={taskId} saved={saved} onSaveTask={onSaveTask} />
         )}
+      </div>
+    );
+  }
+  if (payload.kind === "dealfinder.search") {
+    return (
+      <div className="panel p-4">
+        <DealFinderResultCard payload={payload} />
       </div>
     );
   }
