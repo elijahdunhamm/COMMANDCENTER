@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import type { Agent, AgentExecution, ExecutionContext, ToolCallReporter } from "./base";
 import { awaitingAgent } from "./base";
+import { dealfinderAgent } from "./dealfinder";
 
 /**
  * Registry: agents are configuration. Adding an agent means adding a spec
@@ -49,16 +50,7 @@ const opportunitySpec: AgentSpec = {
   handlesIntents: ["opportunity"],
 };
 
-const dealfinderSpec: AgentSpec = {
-  id: "dealfinder",
-  name: "DealFinder Agent",
-  kind: "specialist",
-  description:
-    "Intended for natural-language local business search and comparison. Not implemented yet.",
-  capability: "awaiting",
-  capabilities: [],
-  handlesIntents: ["dealfinder"],
-};
+/* dealfinderSpec is owned by ./dealfinder (the real implementation). */
 
 const managerSpec: AgentSpec = {
   id: "manager",
@@ -249,7 +241,6 @@ export const researchAgent: Agent = {
 
 export const codingAgent = awaitingAgent(codingSpec);
 export const opportunityAgent = awaitingAgent(opportunitySpec);
-export const dealfinderAgent = awaitingAgent(dealfinderSpec);
 
 /* -------------------------------------------------------------- registry */
 
@@ -258,7 +249,7 @@ export const AGENT_SPECS: AgentSpec[] = [
   researchSpec,
   codingSpec,
   opportunitySpec,
-  dealfinderSpec,
+  dealfinderAgent.spec,
 ];
 
 export const AGENTS: Record<string, Agent> = {

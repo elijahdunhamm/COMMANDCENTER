@@ -81,8 +81,80 @@ export interface ResearchBriefResult {
   notes: string[];
 }
 
+/* ------------------------------------------------- dealfinder (local search) */
+
+/** Where a local search was centered. Provenance is null only when the owner
+ *  supplied coordinates directly in the command (there is no upstream to cite). */
+export interface DealFinderOrigin {
+  kind: "coordinates" | "geocoded";
+  /** Human-readable origin, e.g. "30.2672, -97.7431 (supplied in the command)" */
+  label: string;
+  lat: number;
+  lon: number;
+  provenance: Provenance | null;
+}
+
+/** Price on a DealFinder hit. OSM carries no price data, so a price is NEVER
+ *  invented: this structure exists to make that honesty machine-readable. */
+export interface DealFinderPrice {
+  verified: false;
+  display: "not verified";
+  /** Why the price could not be verified (source carries no price data). */
+  explanation: string;
+}
+
+/** One normalized business from OpenStreetMap, ranked by computed distance. */
+export interface DealFinderHit {
+  osmType: string;
+  osmId: number;
+  osmUrl: string;
+  name: string | null;
+  /** The real OpenStreetMap tags this match is based on, e.g. "shop=hairdresser". */
+  category: string;
+  lat: number;
+  lon: number;
+  /** Computed haversine distance from the search point (labeled as computed). */
+  distanceMiles: number;
+  distanceKm: number;
+  address: string | null;
+  phone: string | null;
+  website: string | null;
+  openingHours: string | null;
+  price: DealFinderPrice;
+  /** "Why this matches" line built only from real dimensions. */
+  why: string;
+  provenance: Provenance;
+}
+
+/** Structured output of the DealFinder Agent (local-service search). */
+export interface DealFinderSearchResult {
+  kind: "dealfinder.search";
+  command: string;
+  service: { key: string; label: string; matchedKeyword: string } | null;
+  /** Specialty phrases captured from the command. Always marked unsearchable:
+   *  OpenStreetMap does not index hairstyles or specialties. */
+  specialties: string[];
+  /** Always false: the flag exists so clients can assert the honesty. */
+  specialtySearchable: false;
+  radiusMiles: number;
+  radiusSource: "command" | "default";
+  maxPrice: { amount: number; currency: "USD" } | null;
+  origin: DealFinderOrigin | null;
+  /** True when no location could be resolved and the owner is being asked for one. */
+  askedForLocation: boolean;
+  /** True when the Overpass source was unreachable/unusable after retries. */
+  sourceUnavailable: boolean;
+  /** True when identical-query results came from the in-process cache. */
+  servedFromCache: boolean;
+  /** The exact Overpass request URL when a search was attempted (provenance). */
+  overpassUrl: string | null;
+  results: DealFinderHit[];
+  notes: string[];
+}
+
 export type ResultPayload =
   | ResearchBriefResult
+  | DealFinderSearchResult
   | CapabilityMissingResult
   | DisabledAgentResult;
 

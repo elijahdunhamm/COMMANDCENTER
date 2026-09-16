@@ -35,7 +35,7 @@ Intent meanings:
 - research: look up facts, summarize a topic, geocode a place (e.g. "research the Eiffel Tower")
 - coding: write, fix, review, or deploy code
 - opportunity: business or market opportunities, leads, niches
-- dealfinder: find and compare local businesses or prices (e.g. "find a barber under $40")`;
+- dealfinder: natural-language local-service search, e.g. "find me a low-taper barber within 10 miles under $40" or "hairdresser near downtown Austin"; also find/compare local businesses or prices`;
 
 /** Calls an OpenAI-compatible /chat/completions endpoint. Never throws. */
 async function chatJson(
@@ -81,8 +81,8 @@ const VALID_INTENTS: Intent[] = ["research", "coding", "opportunity", "dealfinde
 const RULES: { intent: Intent; label: string; re: RegExp }[] = [
   {
     intent: "dealfinder",
-    label: "price/comparison or local-business phrasing",
-    re: /\b(find me|cheapest|cheaper|under \$?\d|within \d+ ?(mi|miles|km)|near me|compare (prices|options)|barber|salon|dentist|plumber|mechanic|restaurant|deal)\b/i,
+    label: "price/comparison or local-service phrasing",
+    re: /\b(find me|cheapest|cheaper|under \$?\d|within \d+ ?(mi|miles|km)|near me|compare (prices|options)|barber|barbershop|hairdresser|haircut|salon|dentist|plumber|mechanic|restaurant|deal)\b/i,
   },
   {
     intent: "coding",
