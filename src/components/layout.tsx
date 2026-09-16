@@ -8,6 +8,7 @@ import { Link } from "@tanstack/react-router";
 
 const NAV = [
   { to: "/", label: "Command" },
+  { to: "/office", label: "Office" },
   { to: "/tasks", label: "Tasks" },
   { to: "/saved", label: "Saved" },
   { to: "/agents", label: "Agents" },
@@ -26,12 +27,12 @@ export function AppHeader() {
             personal agent ops
           </span>
         </Link>
-        <nav aria-label="Primary" className="flex items-center gap-0.5 sm:gap-1">
+        <nav aria-label="Primary" className="flex min-w-0 items-center gap-0.5 overflow-x-auto sm:gap-1">
           {NAV.map((item) => (
             <Link
               key={item.to}
               to={item.to}
-              className="rounded-full px-2 py-1.5 text-[13px] text-body hover:bg-panel hover:text-heading sm:px-3 sm:text-sm"
+              className="shrink-0 whitespace-nowrap rounded-full px-2 py-1.5 text-[13px] text-body hover:bg-panel hover:text-heading sm:px-3 sm:text-sm"
               activeProps={{ className: "bg-panel text-heading font-medium" }}
             >
               {item.label}

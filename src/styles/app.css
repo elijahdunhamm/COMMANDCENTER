@@ -122,3 +122,574 @@
     }
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Office floor: five robots animated only by real orchestration      */
+/* events. Motion is transform/opacity only; the walk between desk    */
+/* and station is a transition, working poses are keyframes.          */
+/* ------------------------------------------------------------------ */
+
+.office-scene {
+  --lane-h: 280px;
+  --walk: 150px;
+  --robot-scale: 1;
+  --desk-h: 26px;
+}
+
+.office-room {
+  position: relative;
+  border-radius: 9px;
+  background: linear-gradient(to bottom, var(--color-panel) 0%, var(--color-panel-2) 78%, #101218 100%);
+}
+
+/* ground: a single hairline where wall meets floor */
+.office-room::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--desk-h) - 6px);
+  height: 1px;
+  background: var(--color-hairline);
+  pointer-events: none;
+}
+
+.office-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.office-lane {
+  position: relative;
+  height: var(--lane-h);
+}
+
+.office-lane + .office-lane {
+  border-left: 1px solid rgba(38, 42, 50, 0.55);
+}
+
+/* stations: wall-mounted units the robots work at */
+.office-station {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.st-monitor,
+.dk-console {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.st-screen {
+  display: block;
+  width: 22px;
+  height: 14px;
+  background: #1c2027;
+  border: 1px solid #4a5058;
+  border-radius: 3px;
+  transition: border-color 0.4s ease, background-color 0.4s ease;
+}
+
+.dk-console .st-screen {
+  width: 26px;
+  height: 16px;
+}
+
+.st-stand {
+  display: block;
+  width: 8px;
+  height: 4px;
+  background: #4a5058;
+  border-radius: 1px;
+}
+
+[data-active="true"] .st-screen {
+  background: #262c36;
+  border-color: var(--color-accent-dim);
+}
+
+.st-printer {
+  position: relative;
+  width: 26px;
+  height: 15px;
+  background: #1c2027;
+  border: 1px solid #4a5058;
+  border-radius: 3px;
+}
+
+.st-slot {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 5px;
+  height: 2px;
+  background: var(--color-ink);
+  border-radius: 1px;
+}
+
+.st-sheet {
+  position: absolute;
+  left: 50%;
+  top: 7px;
+  width: 10px;
+  height: 7px;
+  margin-left: -5px;
+  background: var(--color-body);
+  border-radius: 1px;
+  opacity: 0;
+}
+
+[data-active="true"] .st-sheet {
+  animation: office-sheet 1.3s ease-in-out infinite;
+}
+
+.st-rack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  background: #1c2027;
+  border: 1px solid #4a5058;
+  border-radius: 3px;
+}
+
+.st-rack i {
+  display: block;
+  width: 16px;
+  height: 3px;
+  background: #4a5058;
+  border-radius: 1px;
+}
+
+.st-board {
+  position: relative;
+  width: 22px;
+  height: 16px;
+  background: #1c2027;
+  border: 1px solid #4a5058;
+  border-radius: 2px;
+}
+
+.st-note {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 8px;
+  height: 6px;
+  background: #363c44;
+  border-radius: 1px;
+}
+
+/* desks: where robots idle */
+.office-desk {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 58px;
+  height: var(--desk-h);
+}
+
+.office-desk::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: #2c3138;
+  border: 1px solid #3a4049;
+  border-radius: 2px;
+}
+
+.dk-console {
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.dk-mat {
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  background: #2c3138;
+  border-radius: 1px;
+}
+
+/* the robot itself */
+.office-robot-slot {
+  position: absolute;
+  left: 50%;
+  bottom: var(--desk-h);
+  z-index: 10;
+  transform: translate(-50%, 0);
+  transition: transform 1.5s cubic-bezier(0.45, 0.05, 0.35, 1);
+  will-change: transform;
+}
+
+.office-robot-slot[data-pos="station"] {
+  transform: translate(-50%, calc(-1 * var(--walk)));
+}
+
+.office-robot {
+  display: block;
+  padding: 8px 10px;
+  margin: 0;
+  background: transparent;
+  border: none;
+  cursor: help;
+  transform: scale(var(--robot-scale));
+  transform-origin: bottom center;
+}
+
+.office-robot:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.office-robot-slot[data-disabled="true"] .r-fig {
+  opacity: 0.45;
+  filter: grayscale(0.7);
+}
+
+.r-fig {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 30px;
+  transform-origin: bottom center;
+}
+
+.r-antennae {
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  height: 6px;
+}
+
+.r-ant {
+  position: relative;
+  display: block;
+  width: 2px;
+  height: 6px;
+  background: #4a5058;
+  border-radius: 1px;
+}
+
+.r-ant::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-accent-dim);
+}
+
+.r-head {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 11px;
+  background: #3f454e;
+  border: 1px solid #4a5058;
+  border-radius: 6px;
+}
+
+[data-agent="manager"] .r-head {
+  width: 20px;
+  border-radius: 9px 9px 4px 4px;
+}
+
+[data-agent="coding"] .r-head {
+  border-radius: 3px;
+}
+
+.r-cap {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 22px;
+  height: 3px;
+  background: #4a5058;
+  border-radius: 2px;
+}
+
+.r-eye {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 7px;
+  height: 3px;
+  border-radius: 2px;
+  background: #9aa2ad;
+}
+
+.r-eye.round,
+.r-eye.square {
+  width: 5px;
+  height: 5px;
+}
+
+.r-eye.round {
+  border-radius: 999px;
+}
+
+.r-eye.square {
+  border-radius: 1px;
+}
+
+.r-torso {
+  position: relative;
+  display: block;
+  width: 22px;
+  height: 14px;
+  background: #363c44;
+  border: 1px solid #4a5058;
+  border-radius: 6px;
+}
+
+[data-agent="manager"] .r-torso {
+  width: 25px;
+}
+
+[data-agent="research"] .r-torso {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+}
+
+[data-agent="opportunity"] .r-torso {
+  width: 20px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+[data-agent="coding"] .r-torso {
+  border-radius: 3px;
+}
+
+[data-agent="dealfinder"] .r-torso {
+  height: 13px;
+}
+
+.r-arm {
+  position: absolute;
+  top: 4px;
+  width: 3px;
+  height: 7px;
+  background: #4a5058;
+  border-radius: 2px;
+}
+
+.r-arm.a-l {
+  left: -4px;
+}
+
+.r-arm.a-r {
+  right: -4px;
+}
+
+.r-led {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+}
+
+.r-base {
+  display: block;
+  width: 20px;
+  height: 3px;
+  background: #2c3138;
+  border-radius: 999px;
+}
+
+[data-agent="opportunity"] .r-base {
+  width: 12px;
+}
+
+/* tooltips: the only text in the scene lives here, on demand */
+.office-tip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%) translateY(2px);
+  z-index: 20;
+  width: max-content;
+  max-width: min(220px, 70vw);
+  padding: 5px 9px;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: 8px;
+  color: var(--color-heading);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s ease;
+}
+
+[data-pos="station"] .office-tip {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+
+.office-robot-slot:hover .office-tip,
+.office-robot-slot:focus-within .office-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* keyframes: all transform/opacity, short loops, GPU-cheap */
+@keyframes office-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2.5px);
+  }
+}
+
+@keyframes office-type {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes office-nod {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+
+@keyframes office-hop {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  45% {
+    transform: translateY(-7px);
+  }
+}
+
+@keyframes office-slump {
+  0% {
+    transform: rotate(0deg);
+  }
+  35%,
+  70% {
+    transform: rotate(10deg) translateY(2px);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes office-sheet {
+  0% {
+    transform: translateY(-2px);
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(15px);
+    opacity: 0;
+  }
+}
+
+[data-moving="true"] .r-fig {
+  animation: office-bob 0.5s ease-in-out infinite;
+}
+
+[data-mode="tool"] .r-arm.a-l,
+[data-mode="routing"] .r-arm.a-l {
+  animation: office-type 0.32s ease-in-out infinite;
+}
+
+[data-mode="tool"] .r-arm.a-r,
+[data-mode="routing"] .r-arm.a-r {
+  animation: office-type 0.32s ease-in-out infinite;
+  animation-delay: 0.16s;
+}
+
+[data-mode="reading"] .r-head {
+  animation: office-nod 2.6s ease-in-out infinite;
+}
+
+[data-mode="celebrate"] .r-fig {
+  animation: office-hop 0.55s ease-in-out 2;
+}
+
+[data-mode="slump"] .r-fig {
+  animation: office-slump 1.2s ease-in-out forwards;
+}
+
+/* mobile: the whole floor scales down; tooltips become tap targets */
+@media (max-width: 640px) {
+  .office-scene {
+    --lane-h: 190px;
+    --walk: 96px;
+    --robot-scale: 0.8;
+    --desk-h: 20px;
+  }
+
+  .office-station {
+    top: 14px;
+  }
+
+  .office-tip {
+    font-size: 10px;
+  }
+}
+
+/* reduced motion: the static variant. Robots sit at their real positions
+   with no transition and no loops; tooltips still work. */
+@media (prefers-reduced-motion: reduce) {
+  .office-robot-slot,
+  .office-scene .st-sheet,
+  .office-scene .st-screen {
+    transition: none !important;
+  }
+
+  .office-scene .r-fig,
+  .office-scene .r-fig *,
+  .office-scene .office-tip {
+    animation: none !important;
+    transition: none !important;
+  }
+}
