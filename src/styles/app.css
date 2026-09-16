@@ -133,7 +133,7 @@
   --lane-h: 280px;
   --walk: 150px;
   --robot-scale: 1;
-  --desk-h: 26px;
+  --desk-h: 40px;
 }
 
 .office-room {
@@ -297,6 +297,17 @@
   height: var(--desk-h);
 }
 
+/* props stand on the desk surface (the slab at the top of the block) */
+.dk-console {
+  top: 6px;
+  bottom: auto;
+}
+
+.dk-mat {
+  top: 11px;
+  bottom: auto;
+}
+
 .office-desk::before {
   content: "";
   position: absolute;
@@ -311,14 +322,12 @@
 
 .dk-console {
   position: absolute;
-  bottom: 5px;
   left: 50%;
   transform: translateX(-50%);
 }
 
 .dk-mat {
   position: absolute;
-  bottom: 5px;
   left: 50%;
   transform: translateX(-50%);
   width: 16px;
@@ -662,10 +671,14 @@
 /* mobile: the whole floor scales down; tooltips become tap targets */
 @media (max-width: 640px) {
   .office-scene {
-    --lane-h: 190px;
-    --walk: 96px;
+    --lane-h: 200px;
+    --walk: 100px;
     --robot-scale: 0.8;
-    --desk-h: 20px;
+    --desk-h: 32px;
+  }
+
+  .dk-console {
+    top: 4px;
   }
 
   .office-station {
