@@ -1,7 +1,8 @@
 import { Cpu, ListChecks } from "@phosphor-icons/react";
+import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import { AGENT_STATUS_STYLES, TASK_STATUS_STYLES, Skeleton, StatusBadge, formatTime } from "~/components/status";
+import { AGENT_STATUS_STYLES, TASK_STATUS_STYLES, Skeleton, StatusBadge, formatTime, runDuration } from "~/components/status";
 import type { DashboardState } from "~/server/manager";
 
 /** Agents panel: registry entries with live statuses derived from real runs. */
@@ -11,10 +12,18 @@ export function AgentsPanel({ state }: { state: DashboardState }) {
     <section aria-labelledby="agents-heading" className="panel">
       <h2
         id="agents-heading"
-        className="flex items-center gap-2 border-b hairline px-4 py-3 text-sm font-semibold text-heading"
+        className="flex items-center justify-between gap-2 border-b hairline px-4 py-3 text-sm font-semibold text-heading"
       >
-        <Cpu aria-hidden className="size-4 text-accent" />
-        Agents
+        <span className="flex items-center gap-2">
+          <Cpu aria-hidden className="size-4 text-accent" />
+          Agents
+        </span>
+        <Link
+          to="/agents"
+          className="text-xs font-normal text-muted underline underline-offset-4 hover:text-accent"
+        >
+          Manage
+        </Link>
       </h2>
       <ul className="divide-y hairline">
         {state.agents.map((agent) => (
@@ -27,6 +36,11 @@ export function AgentsPanel({ state }: { state: DashboardState }) {
             {agent.capability === "awaiting" && (
               <p className="mt-1 text-xs text-wait">
                 Registered, not implemented. It declines tasks honestly instead of inventing output.
+              </p>
+            )}
+            {!agent.enabled && (
+              <p className="mt-1 text-xs text-err">
+                Disabled. It refuses new tasks until you re-enable it on the Agents page.
               </p>
             )}
             {agent.capabilities.length > 0 && (
@@ -92,31 +106,31 @@ export function TasksPanel({ state }: { state: DashboardState }) {
         <ol className="divide-y hairline">
           {state.tasks.map((task) => {
             const run = state.runs[task.id]?.[0];
-            const duration =
-              run?.finishedAt && run
-                ? Math.max(
-                    0,
-                    Math.round(
-                      (new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 100,
-                    ) / 10,
-                  )
-                : null;
+            const duration = runDuration(run);
             return (
               <li key={task.id} className="px-4 py-3">
-                <div className="flex items-start justify-between gap-3">
-                  <p className="line-clamp-2 text-sm text-body">{task.command}</p>
-                  <StatusBadge status={task.status} styles={TASK_STATUS_STYLES} />
-                </div>
-                <p className="mono mt-1.5 text-[10px] text-muted">
-                  {task.intent ? `${task.intent}` : "unclassified"}
-                  {task.router ? `, ${task.router === "llm" ? "LLM router" : "rules router"}` : ""}
-                  {task.agentId ? `, ${task.agentId} agent` : ""}
-                  {duration != null ? `, ${duration.toFixed(1)}s` : ""}
-                  {`, ${formatTime(task.createdAt)}`}
-                </p>
-                {task.error && task.status === "failed" && (
-                  <p className="mt-1 text-xs text-err">{task.error}</p>
-                )}
+                <Link
+                  to="/tasks/$taskId"
+                  params={{ taskId: task.id }}
+                  className="block rounded-[6px] focus-visible:outline-offset-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="line-clamp-2 text-sm text-body underline-offset-4 hover:text-heading hover:underline">
+                      {task.command}
+                    </p>
+                    <StatusBadge status={task.status} styles={TASK_STATUS_STYLES} />
+                  </div>
+                  <p className="mono mt-1.5 text-[10px] text-muted">
+                    {task.intent ? `${task.intent}` : "unclassified"}
+                    {task.router ? `, ${task.router === "llm" ? "LLM router" : "rules router"}` : ""}
+                    {task.agentId ? `, ${task.agentId} agent` : ""}
+                    {duration != null ? `, ${duration.toFixed(1)}s` : ""}
+                    {`, ${formatTime(task.createdAt)}`}
+                  </p>
+                  {task.error && task.status === "failed" && (
+                    <p className="mt-1 text-xs text-err">{task.error}</p>
+                  )}
+                </Link>
               </li>
             );
           })}

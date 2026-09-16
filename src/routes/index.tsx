@@ -1,11 +1,12 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { ArrowRight, CircleNotch, TerminalWindow } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { ChatFeed } from "~/components/chat";
+import { AppHeader, StorageBanner } from "~/components/layout";
 import { AgentsPanel, AgentsPanelSkeleton, TasksPanel, TasksPanelSkeleton } from "~/components/panels";
-import { fetchDashboardState, submitCommand } from "~/server/api";
+import { fetchDashboardState, saveResultToLibrary, submitCommand } from "~/server/api";
 import type { DashboardState } from "~/server/manager";
 
 export const Route = createFileRoute("/")({
@@ -38,6 +39,22 @@ function Dashboard() {
     return () => clearInterval(id);
   }, [refresh]);
 
+  /** Saves a research result for real, then refreshes from the store. Returns
+   *  an error message for the inline alert, or null on success. */
+  const handleSaveTask = useCallback(
+    async (taskId: string): Promise<string | null> => {
+      try {
+        const res = await saveResultToLibrary({ data: { taskId } });
+        await refresh();
+        if (!res.ok) return res.error ?? "The result could not be saved.";
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
+    [refresh],
+  );
+
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const trimmed = command.trim();
@@ -64,47 +81,10 @@ function Dashboard() {
 
   return (
     <div className="min-h-dvh">
-      <header className="sticky top-0 z-40 border-b hairline bg-ink/95 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between gap-4 px-4 md:px-6">
-          <p className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold tracking-tight text-heading">
-              DealFinder Command Center
-            </span>
-            <span className="mono hidden text-[10px] uppercase tracking-widest text-muted sm:inline">
-              personal agent ops
-            </span>
-          </p>
-          <nav aria-label="Primary" className="flex items-center gap-1">
-            <Link
-              to="/"
-              className="rounded-full px-3 py-1.5 text-sm text-body hover:bg-panel hover:text-heading"
-              activeProps={{ className: "bg-panel text-heading font-medium" }}
-            >
-              Command
-            </Link>
-            <Link
-              to="/settings"
-              className="rounded-full px-3 py-1.5 text-sm text-body hover:bg-panel hover:text-heading"
-              activeProps={{ className: "bg-panel text-heading font-medium" }}
-            >
-              Settings
-            </Link>
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <main id="main" className="mx-auto max-w-[1400px] px-4 py-6 md:px-6">
-        {storage && !storage.ok && (
-          <div role="alert" className="mb-4 rounded-[10px] border border-err/40 bg-err/5 px-4 py-3 text-sm text-err">
-            Storage error: {storage.error} Tasks and results cannot be saved until this is resolved.
-          </div>
-        )}
-        {storage && storage.ok && storage.mode === "ephemeral" && (
-          <p className="mb-4 rounded-[10px] border border-accent/40 bg-accent/5 px-4 py-3 text-sm text-body">
-            <span className="font-medium text-accent">Ephemeral mode:</span> data is not persisted.
-            Set DATABASE_URL to switch this dashboard to Postgres. Everything else works the same.
-          </p>
-        )}
+        <StorageBanner storage={storage} />
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <section aria-labelledby="feed-heading" className="panel flex min-h-[70dvh] flex-col lg:h-[calc(100dvh-7.5rem)]">
@@ -129,7 +109,7 @@ function Dashboard() {
                   </button>
                 </div>
               ) : state ? (
-                <ChatFeed state={state} pending={pending} />
+                <ChatFeed state={state} pending={pending} onSaveTask={handleSaveTask} />
               ) : (
                 <div className="flex flex-1 flex-col gap-4" aria-hidden>
                   <div className="self-end skeleton h-12 w-2/3 rounded-[10px]" />

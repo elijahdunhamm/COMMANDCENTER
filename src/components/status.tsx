@@ -47,3 +47,28 @@ export function formatTime(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
+
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** Wall-clock duration of a run, in seconds; null while still running. */
+export function runDuration(run: { startedAt: string; finishedAt: string | null } | undefined) {
+  if (!run?.finishedAt) return null;
+  return Math.max(
+    0,
+    Math.round(
+      (new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 100,
+    ) / 10,
+  );
+}

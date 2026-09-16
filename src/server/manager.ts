@@ -343,12 +343,14 @@ export async function getTaskHistory(limit = 200): Promise<TaskHistoryState> {
 
 export interface TaskDetailResponse {
   ok: boolean;
-  detail: TaskDetail | null;
+  storage: StorageInfo;
+  detail: (TaskDetail & { saved: SavedRecord | null }) | null;
   error: string | null;
 }
 
 /** Complete record of one task: command, classification, runs, tool calls,
- *  messages, and final result. Works in both store modes. */
+ *  messages, final result, and whether the result is already saved. Works in
+ *  both store modes. */
 export async function getTaskDetail(taskId: string): Promise<TaskDetailResponse> {
   const store = getStore();
   try {
@@ -356,18 +358,31 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetailResponse>
   } catch (err) {
     return {
       ok: false,
+      storage: {
+        mode: store.mode,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      },
       detail: null,
       error: err instanceof Error ? err.message : String(err),
     };
   }
   const task = await store.getTask(taskId);
-  if (!task) return { ok: true, detail: null, error: null };
+  if (!task) {
+    return { ok: true, storage: store.info(), detail: null, error: null };
+  }
   const [runs, messages, result] = await Promise.all([
     store.listRunsForTask(taskId),
     store.listMessagesForTask(taskId),
     store.getResultForTask(taskId),
   ]);
-  return { ok: true, detail: { task, runs, messages, result }, error: null };
+  const saved = result ? await store.getSavedByResult(result.id) : null;
+  return {
+    ok: true,
+    storage: store.info(),
+    detail: { task, runs, messages, result, saved },
+    error: null,
+  };
 }
 
 /* -------------------------------------------------------- agents state */

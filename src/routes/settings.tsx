@@ -1,7 +1,8 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { Gear, Lightbulb, Plugs } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 
+import { AppHeader, StorageBanner } from "~/components/layout";
 import { fetchDashboardState } from "~/server/api";
 import type { DashboardState } from "~/server/manager";
 
@@ -28,29 +29,7 @@ function Settings() {
 
   return (
     <div className="min-h-dvh">
-      <header className="sticky top-0 z-40 border-b hairline bg-ink/95 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between gap-4 px-4 md:px-6">
-          <p className="text-sm font-semibold tracking-tight text-heading">
-            DealFinder Command Center
-          </p>
-          <nav aria-label="Primary" className="flex items-center gap-1">
-            <Link
-              to="/"
-              className="rounded-full px-3 py-1.5 text-sm text-body hover:bg-panel hover:text-heading"
-              activeProps={{ className: "bg-panel text-heading font-medium" }}
-            >
-              Command
-            </Link>
-            <Link
-              to="/settings"
-              className="rounded-full px-3 py-1.5 text-sm text-body hover:bg-panel hover:text-heading"
-              activeProps={{ className: "bg-panel text-heading font-medium" }}
-            >
-              Settings
-            </Link>
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <main id="main" className="mx-auto max-w-[860px] px-4 py-8 md:px-6">
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-heading">
@@ -78,6 +57,8 @@ function Settings() {
 
         {state && (
           <div className="mt-8 space-y-6">
+            <StorageBanner storage={state.storage} />
+
             <section aria-labelledby="env-heading" className="panel">
               <h2 id="env-heading" className="border-b hairline px-4 py-3 text-sm font-semibold text-heading">
                 Environment variables
@@ -146,6 +127,33 @@ function Settings() {
                     stays as the error path either way.
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section aria-labelledby="change-heading" className="panel">
+              <h2 id="change-heading" className="border-b hairline px-4 py-3 text-sm font-semibold text-heading">
+                Changing these settings
+              </h2>
+              <div className="space-y-2 px-4 py-3 text-sm leading-relaxed text-body">
+                <p>
+                  Everything on this page is driven by environment variables on the server; there
+                  are no in-app settings to edit. Set the variables in the hosting environment
+                  (secrets in the site dashboard, or your shell environment when self-hosting), then
+                  restart the server. Values are read from <span className="mono text-heading">process.env</span> in
+                  server code only, never in client code, never in a <span className="mono text-heading">.env</span> file.
+                </p>
+                <p>
+                  <span className="mono text-heading">DATABASE_URL</span> controls storage mode: set it and the
+                  dashboard persists to Postgres (the schema is applied automatically on first use);
+                  leave it out and the dashboard runs in clearly-labeled ephemeral memory.
+                </p>
+                <p>
+                  <span className="mono text-heading">LLM_BASE_URL</span>,{" "}
+                  <span className="mono text-heading">LLM_API_KEY</span>, and{" "}
+                  <span className="mono text-heading">LLM_MODEL</span> together control the router: set all
+                  three and commands are classified by that model; with any of them missing, the
+                  deterministic fallback router runs and every feed message says which one was used.
+                </p>
               </div>
             </section>
 
