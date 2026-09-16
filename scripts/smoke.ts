@@ -17,7 +17,8 @@ import { executeCommand, getDashboardState, deleteSavedResearch, getEventsSince,
 import { classifyWithFallback } from "../src/server/model";
 import { parseDealfinderQuery } from "../src/server/dealfinder/parser";
 import { overpassEndpointCandidates } from "../src/server/dealfinder/overpass";
-import type { DealFinderSearchResult, DisabledAgentResult, ResearchBriefResult } from "../src/server/types";
+import { readFileSync } from "node:fs";
+import type { AgentView, DealFinderSearchResult, DisabledAgentResult, OrchestrationEvent, ResearchBriefResult } from "../src/server/types";
 
 let failures = 0;
 
@@ -590,6 +591,143 @@ async function main(): Promise<void> {
       (m) => m.taskId === lres.taskId && m.role === "manager" && m.content.toLowerCase().includes("location"),
     ),
     JSON.stringify(lstate.messages.filter((m) => m.taskId === lres.taskId).map((m) => m.content)),
+  );
+
+  // 10. Office scene: the event-driven robot view. The scene is rendered
+  // for real (react-dom/server) so these checks cover markup, tooltips, and
+  // the honest-state derivation, not just source text.
+  console.log("\n-- office scene --");
+  const { renderToString } = await import("react-dom/server");
+  const React = (await import("react")).default;
+  const office = await import("../src/components/office");
+  const noEmDash = (s: string): boolean => !/[\u2014\u2013]/.test(s);
+
+  const idleHtml = renderToString(React.createElement(office.OfficeScene, { events: [], agents: null, error: null }));
+  check(
+    "office scene renders five robots",
+    (idleHtml.match(/office-robot-slot/g) ?? []).length === 5,
+    String((idleHtml.match(/office-robot-slot/g) ?? []).length),
+  );
+  check(
+    "office scene shows every agent idle with zero events",
+    (idleHtml.match(/aria-label="[^"]*idle at desk"/g) ?? []).length === 5,
+    String((idleHtml.match(/aria-label="[^"]*idle at desk"/g) ?? []).length),
+  );
+  check(
+    "office scene tooltips name all five agents",
+    ["Manager", "Research", "Coding", "Opportunity", "DealFinder"].every((n) =>
+      idleHtml.includes(n + " Agent"),
+    ),
+  );
+  check("office scene copy has zero em-dashes", noEmDash(idleHtml));
+
+  const t0 = Date.now();
+  const ev = (seq: number, type: string, agentId: string | null, data: Record<string, unknown>, agoMs: number, runId: string | null = "run-1"): OrchestrationEvent => ({
+    seq,
+    id: "e" + seq,
+    type: type as OrchestrationEvent["type"],
+    taskId: "task-abc12345-xyz",
+    runId,
+    agentId: agentId as OrchestrationEvent["agentId"],
+    at: new Date(t0 - agoMs).toISOString(),
+    data,
+  });
+
+  const busy = [
+    ev(1, "task.queued", null, { command: "Research X" }, 5000, null),
+    ev(2, "run.started", "research", {}, 4000),
+    ev(3, "tool_call.started", "research", { tool: "wikipedia.summary", request: "https://en.wikipedia.org/x" }, 900),
+  ];
+  const busyHtml = renderToString(React.createElement(office.OfficeScene, { events: busy, agents: null, error: null }));
+  check(
+    "office scene walks a robot out on run.started and works at its station",
+    busyHtml.includes('data-pos="station"') && busyHtml.includes("calling wikipedia.summary"),
+  );
+  check(
+    "office scene routes the Manager at its desk while a task is open",
+    busyHtml.includes("Manager Agent - routing task"),
+  );
+  const walkStates = office.deriveOfficeState([ev(1, "run.started", "research", {}, 600)], null, t0);
+  check(
+    "office derivation is mid-walk inside the walk window",
+    walkStates.find((s) => s.agentId === "research")?.mode === "walking-out",
+    JSON.stringify(walkStates.map((s) => s.agentId + ":" + s.mode)),
+  );
+
+  const done = [ev(1, "run.started", "coding", {}, 9000), ev(2, "run.completed", "coding", { toolCallCount: 2 }, 2200)];
+  const doneHtml = renderToString(React.createElement(office.OfficeScene, { events: done, agents: null, error: null }));
+  check(
+    "office scene celebrates a completed run back at the desk",
+    doneHtml.includes("Coding Agent - completed task") && !doneHtml.includes('data-pos="station"'),
+  );
+
+  const failed = [ev(1, "run.started", "coding", {}, 9000), ev(2, "run.failed", "coding", { error: "boom" }, 2200)];
+  const failedHtml = renderToString(React.createElement(office.OfficeScene, { events: failed, agents: null, error: null }));
+  check(
+    "office scene slumps on a failed run and says so honestly",
+    failedHtml.includes("Coding Agent - run failed on task"),
+  );
+
+  const refused = [ev(1, "run.started", "research", { refused: true }, 1200), ev(2, "run.failed", "research", { refused: true, error: "agent disabled by owner; task refused" }, 800)];
+  const refusedStates = office.deriveOfficeState(refused, null, t0);
+  check(
+    "office scene treats a refused run as a refusal, not a failure slump",
+    refusedStates.find((s) => s.agentId === "research")?.mode === "refused",
+    JSON.stringify(refusedStates.find((s) => s.agentId === "research")),
+  );
+
+  const agentView = (id: AgentView["id"], enabled: boolean): AgentView => ({
+    id,
+    name: id.charAt(0).toUpperCase() + id.slice(1),
+    kind: id === "manager" ? "manager" : "specialist",
+    description: "test",
+    capability: "ready",
+    capabilities: [],
+    handlesIntents: [],
+    enabled,
+    status: enabled ? "idle" : "disabled",
+    lastRunAt: null,
+    activeTaskId: null,
+  });
+  const agents = (["manager", "research", "coding", "opportunity", "dealfinder"] as const).map((id) =>
+    agentView(id, id !== "research"),
+  );
+  const disabledHtml = renderToString(React.createElement(office.OfficeScene, { events: [], agents, error: null }));
+  check(
+    "office scene dims exactly the disabled agent with an honest tooltip",
+    (disabledHtml.match(/data-disabled="true"/g) ?? []).length === 1 &&
+      disabledHtml.includes("Research Agent - disabled by the owner"),
+  );
+
+  const officeSrc = readFileSync(new URL("../src/components/office.tsx", import.meta.url), "utf8");
+  const officeRouteSrc = readFileSync(new URL("../src/routes/office.tsx", import.meta.url), "utf8");
+  const layoutSrc = readFileSync(new URL("../src/components/layout.tsx", import.meta.url), "utf8");
+  const cssSrc = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+  const KNOWN_EVENTS = new Set([
+    "task.queued", "task.classified", "run.started", "tool_call.started", "tool_call.finished",
+    "message.added", "run.completed", "run.failed", "task.completed", "task.failed",
+  ]);
+  const eventRefs = [...officeSrc.matchAll(/"(task|run|tool_call|message)\.[a-z_]+"/g)].map((m) => m[0].slice(1, -1));
+  check(
+    "office scene references only real orchestration event types",
+    eventRefs.length > 0 && eventRefs.every((r) => KNOWN_EVENTS.has(r)),
+    JSON.stringify([...new Set(eventRefs)]),
+  );
+  check("office route exists and is registered", officeRouteSrc.includes('createFileRoute("/office")'));
+  check("office is in the primary nav", layoutSrc.includes('to: "/office"'));
+  check(
+    "office scene reuses the shared 600ms event stream",
+    officeRouteSrc.includes("useEventStream") && officeSrc.includes("useNow"),
+  );
+  check(
+    "office scene has a reduced-motion static variant",
+    cssSrc
+      .split("@media (prefers-reduced-motion: reduce)")
+      .some((block) => block.includes("office-robot-slot") && block.includes("transition: none")),
+  );
+  check(
+    "office scene source has zero em-dashes",
+    noEmDash(officeSrc) && noEmDash(officeRouteSrc),
   );
 
   // 9. Env honesty.
