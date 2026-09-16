@@ -334,7 +334,7 @@ async function main(): Promise<void> {
   );
 
   // 8. DealFinder Agent: deterministic parser units, real Overpass search with
-  // provenance (or the honest unavailable path when the source is degraded —
+  // provenance (or the honest unavailable path when the source is degraded:
   // overpass-api.de can refuse connections or return empty bodies under load,
   // so the smoke explicitly tolerates both outcomes), price-cap honesty, and
   // the structured ask-for-location outcome. No branch of these checks can
