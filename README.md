@@ -81,6 +81,46 @@ implementation report `agent.capability_missing` and their tasks fail honestly;
 nothing is fabricated. The Manager Agent cannot be disabled: it is the router
 every task passes through, and the UI says so instead of offering the switch.
 
+## Live activity stream (event backbone)
+
+The orchestration loop emits a real event for every step, in the order the step
+happens, and persists it through the store:
+
+`task.queued`, `task.classified` (intent + router used), `run.started`,
+`tool_call.started`, `tool_call.finished` (tool, request URL, HTTP status,
+durationMs), `message.added`, `run.completed` / `run.failed`,
+`task.completed` / `task.failed`.
+
+- Agents receive a `ToolCallReporter` in their execution context; the Research
+  Agent reports each Wikipedia/Nominatim call as it starts and as it finishes.
+  Refused runs (disabled agent) record `run.started` + `run.failed` and zero
+  tool-call events, matching what really happened.
+- Persistence: Postgres mode stores events in an `events` table (BIGSERIAL
+  `seq` as the stream cursor, mirrored in `migrations/0002_events.sql`), so
+  history survives restarts. Ephemeral mode keeps a 2,000-entry ring buffer in
+  process memory and says so. Event payloads are small and secret-free.
+- Streaming: the client (`useEventStream` hook) polls the `fetchEventsSince`
+  server function every 600ms with a cursor and receives exactly the events
+  persisted since the last poll. **SSE was evaluated and rejected on purpose:**
+  TanStack Start 1.168 has no API-file routes (`createAPIFileRoute` does not
+  exist in this version) and no supported way to hold a streaming Response open
+  through its server functions, which are serialized for both the dev server
+  and the published Bun server. Cursor polling at 600ms delivers every step
+  sub-second with zero framework risk.
+- UI: the dashboard shows a compact **Live** strip (agent chips flip to
+  `working` with elapsed timers the moment a run really starts; when nothing
+  runs it honestly says all agents are idle) and a **Through glass** panel
+  where the newest task's timeline grows in real time: classification appears
+  the moment it happens, each tool call shows a spinner for exactly as long as
+  the call is actually in flight, then its true status and duration. Task
+  detail pages auto-refresh from the stream while their task runs and settle
+  on the final timeline when it ends.
+- Honesty: rows only ever show work that actually happened; nothing is
+  synthesized client-side. The smoke test asserts the real event order for a
+  research run, that started/finished pairs match, that refusal runs have no
+  tool-call events, that every event references a task and run that really
+  exist, and that cursor reads return only events after the cursor.
+
 ## Agent enable/disable
 
 The Agents page exposes each specialist's contract (id, capability state,

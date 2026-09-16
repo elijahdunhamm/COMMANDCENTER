@@ -9,7 +9,7 @@
  * Run: bun run scripts/smoke.ts
  * Exit code 0 = all assertions passed.
  */
-import { executeCommand, getDashboardState, deleteSavedResearch, getSavedLibrary, getTaskDetail, saveResultToLibrary, setAgentEnabledState } from "../src/server/manager";
+import { executeCommand, getDashboardState, deleteSavedResearch, getEventsSince, getSavedLibrary, getTaskDetail, saveResultToLibrary, setAgentEnabledState } from "../src/server/manager";
 import { classifyWithFallback } from "../src/server/model";
 import type { DisabledAgentResult, ResearchBriefResult } from "../src/server/types";
 
@@ -217,7 +217,118 @@ async function main(): Promise<void> {
   const delAgain = savedItem ? await deleteSavedResearch(savedItem.id) : null;
   check("deleting a missing item errors honestly", delAgain?.ok === false && Boolean(delAgain.error), JSON.stringify(delAgain));
 
-  // 7. Env honesty.
+  // 7. Orchestration events: real order, honest payloads, no phantom runs,
+  // and the stream endpoint serves exactly what was persisted.
+  console.log("\n-- orchestration events: real order, stream readback --");
+  const streamAll = await getEventsSince(0);
+  check(
+    "stream endpoint serves persisted events",
+    streamAll.ok === true && streamAll.events.length > 0,
+    JSON.stringify({ ok: streamAll.ok, n: streamAll.events.length, error: streamAll.error }),
+  );
+  const seqs = streamAll.events.map((e) => e.seq);
+  check(
+    "event sequence numbers are strictly increasing",
+    seqs.every((s, i) => i === 0 || s > seqs[i - 1]),
+    JSON.stringify(seqs.slice(0, 20)),
+  );
+
+  const ev1 = streamAll.events.filter((e) => e.taskId === res.taskId);
+  const expectedOrder = [
+    "task.queued",
+    "task.classified",
+    "run.started",
+    "tool_call.started",
+    "tool_call.finished",
+    "tool_call.started",
+    "tool_call.finished",
+    "run.completed",
+    "task.completed",
+  ];
+  const order1 = ev1
+    .map((e) => e.type)
+    .filter((t) => expectedOrder.includes(t));
+  check(
+    "research run emits events in real order (queued, classified, run.started, tool_call x2, run.completed, task.completed)",
+    JSON.stringify(order1) === JSON.stringify(expectedOrder),
+    JSON.stringify(order1),
+  );
+  check(
+    "tool_call.started and tool_call.finished arrive in pairs (2 calls, 2 starts, 2 finishes)",
+    ev1.filter((e) => e.type === "tool_call.started").length === 2 &&
+      ev1.filter((e) => e.type === "tool_call.finished").length === 2,
+    JSON.stringify(ev1.map((e) => e.type)),
+  );
+  check(
+    "classification event carries intent + router used",
+    ev1.some(
+      (e) =>
+        e.type === "task.classified" &&
+        e.data.intent === "research" &&
+        e.data.router === "fallback",
+    ),
+    JSON.stringify(ev1.find((e) => e.type === "task.classified")),
+  );
+  check(
+    "tool_call.finished events carry durationMs, status, and request URL, no secrets",
+    ev1
+      .filter((e) => e.type === "tool_call.finished")
+      .every(
+        (e) =>
+          typeof e.data.durationMs === "number" &&
+          e.data.durationMs >= 0 &&
+          typeof e.data.ok === "boolean" &&
+          typeof e.data.request === "string" &&
+          e.data.request.startsWith("https://"),
+      ),
+    JSON.stringify(ev1.filter((e) => e.type === "tool_call.finished")),
+  );
+
+  // Refusal run (task 3): a run that genuinely never executed anything must
+  // have run.started + run.failed and ZERO tool_call events.
+  const ev3 = streamAll.events.filter((e) => e.taskId === res3.taskId);
+  check(
+    "refused task has run.started and run.failed but zero tool_call events",
+    ev3.some((e) => e.type === "run.started") &&
+      ev3.some((e) => e.type === "run.failed") &&
+      ev3.every((e) => !e.type.startsWith("tool_call.")),
+    JSON.stringify(ev3.map((e) => e.type)),
+  );
+
+  // No phantom references: every event names a task and run that really
+  // exist in the store NOW (a fresh snapshot, since earlier sections ran
+  // additional tasks after the original `state` was captured).
+  const freshState = await getDashboardState();
+  const knownTaskIds = new Set(freshState.tasks.map((t) => t.id));
+  const knownRunIds = new Set(Object.values(freshState.runs).flat().map((r) => r.id));
+  check(
+    "every event references a task that really exists",
+    streamAll.events.every((e) => e.taskId === null || knownTaskIds.has(e.taskId)),
+    JSON.stringify(streamAll.events.filter((e) => e.taskId && !knownTaskIds.has(e.taskId)).slice(0, 2)),
+  );
+  check(
+    "every run event references a run that really happened (no events for runs that never happened)",
+    streamAll.events.every((e) => e.runId === null || knownRunIds.has(e.runId)),
+    JSON.stringify(streamAll.events.filter((e) => e.runId && !knownRunIds.has(e.runId)).slice(0, 2)),
+  );
+
+  // Incremental cursor semantics: from a mid-log cursor, only later events
+  // come back, and the head cursor matches the last persisted event.
+  const mid = seqs[Math.floor(seqs.length / 2)] ?? 0;
+  const stream2 = await getEventsSince(mid);
+  check(
+    "cursor read returns only events after the cursor",
+    stream2.ok === true && stream2.events.every((e) => e.seq > mid) && stream2.lastSeq >= mid,
+    JSON.stringify({ mid, got: stream2.events.map((e) => e.seq).slice(0, 10), lastSeq: stream2.lastSeq }),
+  );
+  const streamTail = await getEventsSince(streamAll.events[streamAll.events.length - 1].seq);
+  check(
+    "cursor at the head returns no events (nothing synthesized between polls)",
+    streamTail.ok === true && streamTail.events.length === 0,
+    JSON.stringify(streamTail.events.slice(0, 3)),
+  );
+
+  // 8. Env honesty.
   console.log("\n-- environment --");
   for (const v of state.env.vars) console.log(`   ${v.name}: ${v.set ? "set" : "missing"}`);
   console.log(`   storage mode: ${state.storage.mode}`);
