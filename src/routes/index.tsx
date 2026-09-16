@@ -5,7 +5,9 @@ import type { FormEvent } from "react";
 
 import { ChatFeed } from "~/components/chat";
 import { AppHeader, StorageBanner } from "~/components/layout";
+import { LiveGlassPanel, LiveStrip } from "~/components/live";
 import { AgentsPanel, AgentsPanelSkeleton, TasksPanel, TasksPanelSkeleton } from "~/components/panels";
+import { useEventStream } from "~/hooks/useEventStream";
 import { fetchDashboardState, saveResultToLibrary, submitCommand } from "~/server/api";
 import type { DashboardState } from "~/server/manager";
 
@@ -22,6 +24,7 @@ function Dashboard() {
   const [pending, setPending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const stream = useEventStream();
 
   const refresh = useCallback(async () => {
     try {
@@ -38,6 +41,18 @@ function Dashboard() {
     const id = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // When the stream reports a task really finished, refresh immediately so
+  // the chat, agents panel, and history flip without waiting for the poll.
+  const lastHandledSeq = useRef(0);
+  useEffect(() => {
+    const fresh = stream.events.filter((e) => e.seq > lastHandledSeq.current);
+    if (fresh.length === 0) return;
+    lastHandledSeq.current = fresh[fresh.length - 1].seq;
+    if (fresh.some((e) => e.type === "task.completed" || e.type === "task.failed")) {
+      void refresh();
+    }
+  }, [stream.events, refresh]);
 
   /** Saves a research result for real, then refreshes from the store. Returns
    *  an error message for the inline alert, or null on success. */
@@ -86,7 +101,9 @@ function Dashboard() {
       <main id="main" className="mx-auto max-w-[1400px] px-4 py-6 md:px-6">
         <StorageBanner storage={storage} />
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <LiveStrip events={stream.events} error={stream.error} />
+
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <section aria-labelledby="feed-heading" className="panel flex min-h-[70dvh] flex-col lg:h-[calc(100dvh-7.5rem)]">
             <h2
               id="feed-heading"
@@ -161,6 +178,7 @@ function Dashboard() {
           </section>
 
           <div className="flex flex-col gap-6">
+            <LiveGlassPanel events={stream.events} error={stream.error} ready={stream.ready} />
             {state ? <AgentsPanel state={state} /> : <AgentsPanelSkeleton />}
             {state ? <TasksPanel state={state} /> : <TasksPanelSkeleton />}
           </div>

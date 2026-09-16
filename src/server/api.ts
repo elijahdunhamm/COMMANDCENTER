@@ -50,6 +50,37 @@ export const fetchTaskDetail = createServerFn({ method: "POST" })
     return getTaskDetail(data.taskId);
   });
 
+/* ------------------------------------------------------ live event stream */
+
+export interface EventStreamInput {
+  /** Cursor: only events with a sequence number greater than this are returned. */
+  since: number;
+  /** Optional filter to one task's events. */
+  taskId?: string;
+}
+
+/**
+ * Cursor-based read of the persisted orchestration event log. This is the
+ * live stream's server side: the client polls it every few hundred
+ * milliseconds and receives exactly the steps the orchestration loop really
+ * recorded since its last poll. Server-side only, no secrets in payloads.
+ */
+export const fetchEventsSince = createServerFn({ method: "POST" })
+  .validator((input: unknown): EventStreamInput => {
+    const o = input as { since?: unknown; taskId?: unknown } | null;
+    if (typeof o === "object" && o !== null && typeof o.since === "number" && Number.isFinite(o.since)) {
+      return {
+        since: o.since,
+        ...(typeof o.taskId === "string" && o.taskId ? { taskId: o.taskId } : {}),
+      };
+    }
+    throw new Error("Expected { since: number, taskId?: string }");
+  })
+  .handler(async ({ data }) => {
+    const { getEventsSince } = await import("~/server/manager");
+    return getEventsSince(data.since, data.taskId);
+  });
+
 /* ------------------------------------------------------------- agents */
 
 export const fetchAgentsState = createServerFn({ method: "GET" }).handler(async () => {

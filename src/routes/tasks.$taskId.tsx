@@ -1,10 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ClipboardText } from "@phosphor-icons/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { MessageRow } from "~/components/chat";
 import { AppHeader, StorageBanner } from "~/components/layout";
+import { useEventStream } from "~/hooks/useEventStream";
 import { ResultCard } from "~/components/results";
 import {
   TASK_STATUS_STYLES,
@@ -133,6 +134,24 @@ function TaskDetailPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+  // Live: refresh whenever the stream delivers a new real event for this
+  // task, plus a slow backup poll while the task is genuinely still open.
+  const stream = useEventStream(taskId);
+  const lastEventSeqRef = useRef(0);
+  useEffect(() => {
+    if (stream.events.length === 0) return;
+    const last = stream.events[stream.events.length - 1].seq;
+    if (last === lastEventSeqRef.current) return;
+    lastEventSeqRef.current = last;
+    void refresh();
+  }, [stream.events, refresh]);
+  const running =
+    resp?.detail?.task.status === "queued" || resp?.detail?.task.status === "working";
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => void refresh(), 1500);
+    return () => clearInterval(id);
+  }, [running, refresh]);
 
   const handleSaveTask = useCallback(
     async (id: string): Promise<string | null> => {
@@ -208,6 +227,12 @@ function TaskDetailPage() {
 
             <div className="mono mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
               <StatusBadge status={resp.detail.task.status} styles={TASK_STATUS_STYLES} />
+              {running && (
+                <span className="inline-flex items-center gap-1.5 font-sans text-[11px] font-medium text-accent">
+                  <span aria-hidden className="inline-block size-1.5 rounded-full bg-accent status-working" />
+                  Live: this page updates as the run progresses
+                </span>
+              )}
               <span>task {resp.detail.task.id.slice(0, 8)}</span>
               <span>{resp.detail.task.intent ? `intent: ${resp.detail.task.intent}` : "intent: unclassified"}</span>
               <span>
