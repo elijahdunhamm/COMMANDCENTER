@@ -18,7 +18,8 @@ import { classifyCommand, classifyWithFallback, llmConfig } from "../src/server/
 import { parseDealfinderQuery } from "../src/server/dealfinder/parser";
 import { overpassEndpointCandidates } from "../src/server/dealfinder/overpass";
 import { parseCodingDirectives } from "../src/server/agents/coding";
-import { parseHnHit, rankStories } from "../src/server/agents/opportunity";
+import { parseHnHit, rankStories, extractSearchTopic } from "../src/server/agents/opportunity";
+import { isPlausibleWikiHit, pickPlausibleOpenSearchHit } from "../src/server/agents";
 import { checkCommandPolicy } from "../src/server/tools/workspace";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -682,7 +683,167 @@ async function main(): Promise<void> {
     JSON.stringify(lstate.messages.filter((m) => m.taskId === lres.taskId).map((m) => m.content)),
   );
 
-  // 10. Office scene: the event-driven robot view. The scene is rendered
+  // 10. Opportunity Agent: the subject is reduced to its search topic before
+  // querying. Fixture-driven unit checks prove the deterministic extraction
+  // (including the stopword guardrail) and the HN parse/rank path with no
+  // network; a live scan then proves the extracted topic was really the query.
+  console.log("\n-- opportunity: topic extraction + HN parsing (fixtures, no network) --");
+  const extractionFixture = JSON.parse(
+    readFileSync(new URL("./fixtures/topic-extraction.fixture.json", import.meta.url), "utf8"),
+  ) as { cases: { subject: string; expectedTopic: string; expectedExtracted: boolean }[] };
+  check("topic extraction fixture has cases", extractionFixture.cases.length >= 15, String(extractionFixture.cases.length));
+  for (const c of extractionFixture.cases) {
+    const got = extractSearchTopic(c.subject);
+    check(
+      `extractSearchTopic: "${c.subject}" -> "${c.expectedTopic}"${c.expectedExtracted ? "" : " (guardrail keeps the full subject)"}`,
+      got.topic === c.expectedTopic && got.extracted === c.expectedExtracted,
+      JSON.stringify(got),
+    );
+  }
+
+  const hnFixture = JSON.parse(readFileSync(new URL("./fixtures/hn-search.fixture.json", import.meta.url), "utf8")) as { hits: unknown[] };
+  const hnParsed = hnFixture.hits
+    .map((h) => parseHnHit(h as Parameters<typeof parseHnHit>[0]))
+    .filter((s): s is NonNullable<ReturnType<typeof parseHnHit>> => s !== null);
+  check("hn fixture parses 4 usable hits, dropping the titleless one", hnParsed.length === 4, String(hnParsed.length));
+  const hnRanked = rankStories(hnParsed);
+  check(
+    "hn fixture ranks points desc, tie broken newest-first",
+    hnRanked[0]?.objectId === "31000001" &&
+      hnRanked[1]?.objectId === "31000003" &&
+      hnRanked[2]?.objectId === "31000002" &&
+      hnRanked[3]?.objectId === "31000004" &&
+      hnRanked.every((s, i) => s.rank === i + 1),
+    JSON.stringify(hnRanked.map((s) => `${s.rank}:${s.objectId}:${s.points}`)),
+  );
+
+  console.log("\n-- research: wikipedia search-fallback plausibility (fixture, no network) --");
+  const wikiFixture = JSON.parse(readFileSync(new URL("./fixtures/wikipedia-search.fixture.json", import.meta.url), "utf8")) as {
+    query: string;
+    response: unknown;
+    weak_overlap_response: unknown;
+    empty_response: unknown;
+  };
+  const eiffelPick = pickPlausibleOpenSearchHit("Eifle Tower", wikiFixture.response);
+  check(
+    "plausibility: misspelled 'Eifle Tower' resolves to the real Eiffel Tower article",
+    eiffelPick?.title === "Eiffel Tower" && eiffelPick.url === "https://en.wikipedia.org/wiki/Eiffel_Tower",
+    JSON.stringify(eiffelPick),
+  );
+  check(
+    "plausibility: a weak-overlap hit is rejected for the owner's typo'd phrase (no wrong article substituted)",
+    pickPlausibleOpenSearchHit("esearch brief: business oppurtnites in local services", wikiFixture.weak_overlap_response) === null,
+    "expected null",
+  );
+  check(
+    "plausibility: empty search results give no candidate",
+    pickPlausibleOpenSearchHit("Eifle Tower", wikiFixture.empty_response) === null &&
+      pickPlausibleOpenSearchHit("Eifle Tower", undefined) === null,
+    "expected null",
+  );
+  check(
+    "plausibility: a subject with no content tokens never matches anything",
+    isPlausibleWikiHit("in the of", "Anything at all", "whatever") === false,
+    "expected false",
+  );
+
+  console.log("\n-- opportunity: live scan queries the extracted topic --");
+  const ores = await executeCommand("find business opportunities in local services");
+  check("opportunity command executed ok", ores.ok === true && Boolean(ores.taskId), JSON.stringify(ores));
+  const ostate = await getDashboardState();
+  const otask = ostate.tasks.find((t) => t.id === ores.taskId);
+  check(
+    "opportunity task routed to the Opportunity agent",
+    otask?.intent === "opportunity" && otask?.agentId === "opportunity",
+    JSON.stringify(otask),
+  );
+  const opayload = (ores.taskId ? ostate.results[ores.taskId]?.payload : undefined) as OpportunityScanResult | undefined;
+  check("opportunity result kind is opportunity.scan", opayload?.kind === "opportunity.scan", String(opayload?.kind));
+  check("original subject kept verbatim as topic", opayload?.topic === "business opportunities in local services", opayload?.topic);
+  check(
+    "hnQuery is the extracted topic, honestly labeled",
+    opayload?.hnQuery === "local services" && opayload?.hnQuerySource === "extracted_topic",
+    JSON.stringify({ hnQuery: opayload?.hnQuery, source: opayload?.hnQuerySource }),
+  );
+  check(
+    "note explains the deterministic extraction",
+    (opayload?.notes ?? []).some((n) => n.includes("deterministic") && n.includes("local services")),
+    JSON.stringify(opayload?.notes),
+  );
+  const oHnCall = ores.taskId ? ostate.runs[ores.taskId]?.[0]?.toolCalls.find((c) => c.tool === "hn.search") : undefined;
+  check(
+    "the recorded hn.search request URL used the extracted topic",
+    Boolean(oHnCall?.request.includes("query=local%20services")),
+    oHnCall?.request,
+  );
+  if (opayload?.hnUnavailable) {
+    console.log("   (HN is degraded right now: query provenance verified, story checks skipped)");
+  } else {
+    check(
+      "real stories came back for the extracted topic, ranked points desc with provenance",
+      (opayload?.stories.length ?? 0) > 0 &&
+        opayload!.stories.every(
+          (s, i) =>
+            s.provenance.url.includes("query=local%20services") &&
+            (i === 0 || opayload!.stories[i - 1].points >= s.points),
+        ),
+      JSON.stringify(opayload?.stories.slice(0, 2).map((s) => `${s.rank}:${s.points}`)),
+    );
+  }
+  const oEvents = (await getEventsSince(0)).events.filter((e) => e.taskId === ores.taskId);
+  check(
+    "events record the hn.search tool call (started and finished)",
+    oEvents.some((e) => e.type === "tool_call.started" && e.data.tool === "hn.search") &&
+      oEvents.some((e) => e.type === "tool_call.finished" && e.data.tool === "hn.search"),
+    JSON.stringify(oEvents.map((e) => e.type)),
+  );
+
+  console.log("\n-- research: live summary via the wikipedia search fallback --");
+  const rres = await executeCommand("Research the Eifle Tower");
+  check("misspelled research command executed ok", rres.ok === true && Boolean(rres.taskId), JSON.stringify(rres));
+  const rstate = await getDashboardState();
+  const rtask = rstate.tasks.find((t) => t.id === rres.taskId);
+  check("misspelled subject routed to the research agent", rtask?.intent === "research", JSON.stringify(rtask));
+  const rpayload = (rres.taskId ? rstate.results[rres.taskId]?.payload : undefined) as ResearchBriefResult | undefined;
+  check("research result kind is research.brief", rpayload?.kind === "research.brief", String(rpayload?.kind));
+  const rCalls = rres.taskId ? (rstate.runs[rres.taskId]?.[0]?.toolCalls ?? []) : [];
+  if (rpayload?.summary?.text) {
+    check(
+      "fallback summary resolved with honest fallback provenance",
+      rpayload.summary.provenance.source.includes("search fallback") &&
+        rpayload.summaryFallback?.failedSummaryUrl.includes("/summary/Eifle_Tower") === true &&
+        rpayload.summaryFallback.articleUrl.startsWith("https://en.wikipedia.org/wiki/Eiffel_Tower"),
+      JSON.stringify(rpayload.summaryFallback),
+    );
+    check(
+      "note records both the failed 404 slug and the article actually used",
+      (rpayload.notes ?? []).some(
+        (n) => n.includes("404") && n.includes("/summary/Eifle_Tower") && n.includes("Eiffel Tower"),
+      ),
+      JSON.stringify(rpayload.notes),
+    );
+    check(
+      "run recorded 4 real tool calls (404 summary, search, fallback summary, nominatim)",
+      rCalls.length === 4 && rCalls[0]?.status === 404 && rCalls.some((c) => c.tool === "wikipedia.search" && c.ok),
+      JSON.stringify(rCalls.map((c) => `${c.tool}:${c.status}`)),
+    );
+  } else {
+    check(
+      "when the fallback does not resolve, the no-summary path still explains itself and never substitutes silently",
+      (rpayload?.notes ?? []).length > 0 && rCalls.some((c) => c.tool === "wikipedia.search"),
+      JSON.stringify({ notes: rpayload?.notes, calls: rCalls.map((c) => c.tool) }),
+    );
+    console.log("   (Wikipedia fallback did not resolve this run: the honest no-summary path was verified)");
+  }
+  const rEvents = (await getEventsSince(0)).events.filter((e) => e.taskId === rres.taskId);
+  check(
+    "events show the real fallback calls (wikipedia.search started and finished)",
+    rEvents.some((e) => e.type === "tool_call.started" && e.data.tool === "wikipedia.search") &&
+      rEvents.some((e) => e.type === "tool_call.finished" && e.data.tool === "wikipedia.search"),
+    JSON.stringify(rEvents.map((e) => e.type)),
+  );
+
+  // 11. Office scene: the event-driven robot view. The scene is rendered
   // for real (react-dom/server) so these checks cover markup, tooltips, and
   // the honest-state derivation, not just source text.
   console.log("\n-- office scene --");

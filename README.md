@@ -303,7 +303,20 @@ and whitelisted read-only commands (`ls`, `cat`, `grep`, `git status`, and
 similar) under a hard timeout, with no shell. Anything outside the sandbox or
 off the whitelist is refused as data (`agent.refused`), never attempted. The
 Opportunity Agent scans Hacker News (Algolia API) and Wikipedia, both free and
-key-free, with deterministic ranking stated in the result.
+key-free, with deterministic ranking stated in the result. Before querying, it
+reduces the subject to its actual topic with deterministic prefix stripping
+("business opportunities in on-device AI" searches HN for "on-device AI", not
+the whole sentence; if stripping would leave only stopwords, the full subject
+is queried instead), and the result records which query was really used
+(`hnQuery` / `hnQuerySource`) alongside the original subject.
+
+The Research Agent resolves near-miss subjects honestly: when the direct
+Wikipedia title lookup returns 404 ("Eifle Tower"), it runs one opensearch
+search (key-free, the same did-you-mean correction the Wikipedia search box
+uses) and, only if the hit overlaps the subject's content words, quotes that
+article's summary with provenance naming both the failed slug and the article
+search actually returned. A subject that matches nothing plausible stays an
+honest no-summary; a wrong article is never substituted.
 
 ## Running
 

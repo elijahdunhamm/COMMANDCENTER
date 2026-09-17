@@ -1,0 +1,7 @@
+{
+  "_comment": "Recorded-shape fixture of a Wikipedia opensearch response (action=opensearch&limit=1&format=json&formatversion=2), as returned live for the misspelled query 'Eifle Tower'. Smoke exercises pickPlausibleOpenSearchHit WITHOUT network: the near-miss resolves to the real article, weak-overlap hits are rejected.",
+  "query": "Eifle Tower",
+  "response": ["Eifle Tower", ["Eiffel Tower"], [""], ["https://en.wikipedia.org/wiki/Eiffel_Tower"]],
+  "weak_overlap_response": ["esearch brief: business oppurtnites in local services", ["Business service"], ["Economic services to businesses"], ["https://en.wikipedia.org/wiki/Business_service"]],
+  "empty_response": ["esearch brief: business oppurtnites in local services", [], [], []]
+}

@@ -74,6 +74,20 @@ export function ResearchResultCard({ payload }: { payload: ResearchBriefResult }
               url={payload.summary.provenance.url}
               fetchedAt={payload.summary.provenance.fetchedAt}
             />
+            {payload.summaryFallback && (
+              <p className="mono text-xs text-muted">
+                Resolved via Wikipedia search after the direct title lookup returned 404. Quoted from{" "}
+                <a
+                  href={payload.summaryFallback.articleUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent underline underline-offset-4 hover:text-heading"
+                >
+                  {payload.summaryFallback.articleTitle}
+                </a>
+                , matched by searching for the subject.
+              </p>
+            )}
           </div>
         </div>
       ) : (
@@ -434,6 +448,12 @@ export function OpportunityScanCard({ payload }: { payload: OpportunityScanResul
         Opportunity scan: <span className="mono text-accent">{payload.topic}</span>
       </h3>
       <p className="mono mt-1 text-xs text-muted">ranking: {payload.rankingRule}</p>
+      {payload.hnQuery && (
+        <p className="mono mt-1 text-xs text-muted">
+          Hacker News was queried with{payload.hnQuerySource === "extracted_topic" ? " the extracted topic" : " the full subject"}:{" "}
+          <span className="text-body">{payload.hnQuery}</span>
+        </p>
+      )}
 
       {payload.wiki?.text && (
         <div className="mt-3 border-t hairline pt-3">
