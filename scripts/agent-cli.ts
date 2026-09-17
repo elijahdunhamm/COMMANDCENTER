@@ -55,6 +55,11 @@ function renderPayload(p: ResultPayload): string[] {
       break;
     }
     case "opportunity.scan": {
+      if (p.hnQuery) {
+        lines.push(
+          `Queried with${p.hnQuerySource === "extracted_topic" ? " the extracted topic" : " the full subject"}: ${p.hnQuery}`,
+        );
+      }
       if (p.wiki?.text) {
         lines.push(`Context (Wikipedia, ${p.wiki.provenance.source}):`);
         lines.push(`  ${p.wiki.text.slice(0, 400)}${p.wiki.text.length > 400 ? "..." : ""}`);

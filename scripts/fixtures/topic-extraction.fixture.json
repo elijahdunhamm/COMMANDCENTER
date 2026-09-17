@@ -1,0 +1,21 @@
+{
+  "_comment": "Fixture of subject -> expected search-topic mappings for extractSearchTopic (pure deterministic string ops, no network). Guardrail cases expect expectedExtracted=false and the full subject kept verbatim.",
+  "cases": [
+    { "subject": "business opportunities in on-device AI", "expectedTopic": "on-device AI", "expectedExtracted": true },
+    { "subject": "business opportunities in local services", "expectedTopic": "local services", "expectedExtracted": true },
+    { "subject": "find business opportunities in AI agents", "expectedTopic": "AI agents", "expectedExtracted": true },
+    { "subject": "business opportunities for EV charging", "expectedTopic": "EV charging", "expectedExtracted": true },
+    { "subject": "business opportunities around home robotics", "expectedTopic": "home robotics", "expectedExtracted": true },
+    { "subject": "opportunities in developer tooling", "expectedTopic": "developer tooling", "expectedExtracted": true },
+    { "subject": "market gaps in elder care", "expectedTopic": "elder care", "expectedExtracted": true },
+    { "subject": "leads for pressure washing", "expectedTopic": "pressure washing", "expectedExtracted": true },
+    { "subject": "scan Hacker News for on-device AI", "expectedTopic": "on-device AI", "expectedExtracted": true },
+    { "subject": "search hacker news for startups", "expectedTopic": "startups", "expectedExtracted": true },
+    { "subject": "please scan HN for local-first software", "expectedTopic": "local-first software", "expectedExtracted": true },
+    { "subject": "startups", "expectedTopic": "startups", "expectedExtracted": false },
+    { "subject": "on-device AI", "expectedTopic": "on-device AI", "expectedExtracted": false },
+    { "subject": "business opportunities in", "expectedTopic": "business opportunities in", "expectedExtracted": false },
+    { "subject": "opportunities in the", "expectedTopic": "opportunities in the", "expectedExtracted": false },
+    { "subject": "leads for", "expectedTopic": "leads for", "expectedExtracted": false }
+  ]
+}

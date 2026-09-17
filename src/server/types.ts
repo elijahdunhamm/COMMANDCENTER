@@ -118,7 +118,13 @@ export interface OpportunityStory {
 /** Structured output of the Opportunity Agent (HN + Wikipedia scan). */
 export interface OpportunityScanResult {
   kind: "opportunity.scan";
+  /** The original subject the agent was handed, kept verbatim. */
   topic: string;
+  /** The query string the sources were actually queried with. */
+  hnQuery: string;
+  /** Honest provenance for hnQuery: "extracted_topic" when the subject was
+   *  reduced to its topic, "full_subject" when the subject itself was used. */
+  hnQuerySource: "extracted_topic" | "full_subject";
   /** The exact deterministic ranking rule that ordered the stories. */
   rankingRule: string;
   stories: OpportunityStory[];
@@ -144,11 +150,27 @@ export interface PlaceSection {
   provenance: Provenance;
 }
 
+/** Provenance for a summary that was resolved through the Wikipedia search
+ *  fallback after the direct title lookup returned 404. Both URLs are real
+ *  requests that were actually made, in order. */
+export interface ResearchSummaryFallback {
+  /** The direct summary request that failed with 404. */
+  failedSummaryUrl: string;
+  /** The Wikipedia search request that produced the candidate article. */
+  searchUrl: string;
+  /** Title of the article search actually returned. */
+  articleTitle: string;
+  /** URL of the article the quoted summary came from. */
+  articleUrl: string;
+}
+
 /** Structured output of the Research Agent (the one functional capability). */
 export interface ResearchBriefResult {
   kind: "research.brief";
   subject: string;
   summary: SummarySection | null;
+  /** Set only when the summary came from the search fallback path. */
+  summaryFallback?: ResearchSummaryFallback | null;
   place: PlaceSection | null;
   /** Honest notes about what could not be verified. */
   notes: string[];
