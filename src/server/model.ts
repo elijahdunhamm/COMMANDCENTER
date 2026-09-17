@@ -92,7 +92,7 @@ const RULES: { intent: Intent; label: string; re: RegExp }[] = [
   {
     intent: "opportunity",
     label: "business-opportunity phrasing",
-    re: /\b(opportunit|lead|prospect|market gap|niche|competitor|monetiz|revenue|invest)\w*\b/i,
+    re: /\b(opportunit|lead|prospect|market gap|niche|competitor|monetiz|revenue|invest)\w*\b|\b(scan|search) (hacker ?news|hn)\b/i,
   },
   {
     intent: "research",
