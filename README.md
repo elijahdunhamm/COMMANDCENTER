@@ -265,6 +265,46 @@ The Manager picks it up automatically; it appears in the Agents panel. Until a
 capability is real, leave the agent as `awaiting`: it declines tasks honestly
 instead of producing fake output.
 
+## Mac-side agent runtime (headless CLI)
+
+The same Manager/agent core runs headless, with no web server:
+
+```sh
+bun run agent -- "list the files in the workspace"
+bun run agent --json -- "scan Hacker News for on-device AI"
+```
+
+The CLI prints an honest report: which router ran, classification, routing,
+every tool call with duration and request, and the structured result. Exit
+codes: 0 completed, 1 task failed or refused, 2 usage/storage error. With
+`DATABASE_URL` unset, storage stays process-local (ephemeral); nothing leaves
+the machine.
+
+To route with a local model instead of the deterministic fallback, run an
+OpenAI-compatible server and set the existing env vars, for example with
+Ollama (free, runs on CPU):
+
+```sh
+ollama serve
+ollama pull qwen2.5:1.5b-instruct-q4_K_M   # small quantized model, CPU-friendly
+export LLM_BASE_URL=http://localhost:11434/v1
+export LLM_API_KEY=ollama                   # Ollama ignores the value but the var must be set
+export LLM_MODEL=qwen2.5:1.5b-instruct-q4_K_M
+```
+
+Model size guidance: 1.5-3B quantized models are the practical ceiling for a
+2016 Intel MacBook (CPU-only, no discrete GPU); expect seconds-to-tens-of-
+seconds per classification. The deterministic fallback router stays first-class:
+with no LLM env vars set, everything still works and the CLI says so honestly.
+
+The Coding Agent works only inside a sandboxed workspace directory (default
+`./agent-workspace`, override with `AGENT_WORKSPACE`): list/read/write files
+and whitelisted read-only commands (`ls`, `cat`, `grep`, `git status`, and
+similar) under a hard timeout, with no shell. Anything outside the sandbox or
+off the whitelist is refused as data (`agent.refused`), never attempted. The
+Opportunity Agent scans Hacker News (Algolia API) and Wikipedia, both free and
+key-free, with deterministic ranking stated in the result.
+
 ## Running
 
 ```sh

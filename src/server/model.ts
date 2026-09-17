@@ -87,7 +87,7 @@ const RULES: { intent: Intent; label: string; re: RegExp }[] = [
   {
     intent: "coding",
     label: "software work phrasing",
-    re: /\b(code|coding|build (a|an|the)|fix|bug|deploy|refactor|typescript|javascript|python|script|api endpoint|test suite|compile)\b/i,
+    re: /\b(code|coding|build (a|an|the)|fix|bug|deploy|refactor|typescript|javascript|python|script|api endpoint|test suite|compile|cat|file|files|folder|folders|directory|workspace|rename|run (a |an |the )?(curl|wget|node|bun|npm|npx|pnpm|yarn|make|bash|sh|git|ls|grep|head|tail|wc|find|echo|touch|mkdir|pip|cargo|deno|tsc))\b/i,
   },
   {
     intent: "opportunity",

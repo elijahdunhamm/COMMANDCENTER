@@ -37,10 +37,16 @@ export function getEnvStatus(): EnvStatus {
       purpose: "Model name the provider expects, e.g. gpt-4o-mini. Never hard-coded.",
       set: Boolean(process.env.LLM_MODEL),
     },
+    {
+      name: "AGENT_WORKSPACE",
+      purpose:
+        "Coding Agent sandbox directory (default ./agent-workspace). Only paths inside it are touched.",
+      set: Boolean(process.env.AGENT_WORKSPACE),
+    },
   ];
   return {
     vars,
     storageMode: process.env.DATABASE_URL ? "postgres" : "ephemeral",
-    llmRouterActive: vars.slice(1).every((v) => v.set),
+    llmRouterActive: vars.filter((v) => v.name.startsWith("LLM_")).every((v) => v.set),
   };
 }

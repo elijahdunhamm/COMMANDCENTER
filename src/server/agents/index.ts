@@ -6,9 +6,11 @@ import type {
   SummarySection,
   ToolCall,
 } from "../types";
-import type { Agent, AgentExecution, ExecutionContext, ToolCallReporter } from "./base";
-import { awaitingAgent } from "./base";
+import type { Agent, AgentExecution, ExecutionContext } from "./base";
 import { dealfinderAgent } from "./dealfinder";
+import { codingAgent } from "./coding";
+import { opportunityAgent } from "./opportunity";
+import { OPEN_DATA_UA, timedFetchJson } from "../tools/fetch";
 
 /**
  * Registry: agents are configuration. Adding an agent means adding a spec
@@ -30,25 +32,8 @@ const researchSpec: AgentSpec = {
   handlesIntents: ["research"],
 };
 
-const codingSpec: AgentSpec = {
-  id: "coding",
-  name: "Coding Agent",
-  kind: "specialist",
-  description: "Intended for code writing, fixes, and deploys. Not implemented yet.",
-  capability: "awaiting",
-  capabilities: [],
-  handlesIntents: ["coding"],
-};
-
-const opportunitySpec: AgentSpec = {
-  id: "opportunity",
-  name: "Opportunity Agent",
-  kind: "specialist",
-  description: "Intended for market and business-opportunity research. Not implemented yet.",
-  capability: "awaiting",
-  capabilities: [],
-  handlesIntents: ["opportunity"],
-};
+const codingSpec = codingAgent.spec;
+const opportunitySpec = opportunityAgent.spec;
 
 /* dealfinderSpec is owned by ./dealfinder (the real implementation). */
 
@@ -67,46 +52,6 @@ const managerSpec: AgentSpec = {
 };
 
 /* ------------------------------------------------------- research (ready) */
-
-const UA =
-  "DealFinder-CommandCenter/0.1 (personal AI dashboard research agent)";
-
-async function timedFetchJson(
-  tool: string,
-  url: string,
-  headers: Record<string, string>,
-  timeoutMs: number,
-  reporter?: ToolCallReporter,
-): Promise<{ json: unknown | null; call: ToolCall }> {
-  // Report the start before any work happens, so the live view shows the
-  // row as running for exactly as long as the call really takes.
-  reporter?.started({ tool, request: url });
-  const started = Date.now();
-  try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
-    const durationMs = Date.now() - started;
-    if (!res.ok) {
-      const call: ToolCall = { tool, request: url, status: res.status, ok: false, durationMs };
-      reporter?.finished(call);
-      return { json: null, call };
-    }
-    const json = (await res.json()) as unknown;
-    const call: ToolCall = { tool, request: url, status: res.status, ok: true, durationMs };
-    reporter?.finished(call);
-    return { json, call };
-  } catch (err) {
-    const call: ToolCall = {
-      tool,
-      request: url,
-      status: null,
-      ok: false,
-      durationMs: Date.now() - started,
-      error: err instanceof Error ? err.message : String(err),
-    };
-    reporter?.finished(call);
-    return { json: null, call };
-  }
-}
 
 interface WikiSummary {
   title?: string;
@@ -136,7 +81,7 @@ export const researchAgent: Agent = {
     // Tool 1: Wikipedia REST summary (permitted, no key).
     const wikiSlug = encodeURIComponent(subject.replace(/\s+/g, "_"));
     const wikiUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${wikiSlug}`;
-    const wiki = await timedFetchJson("wikipedia.summary", wikiUrl, { "user-agent": UA }, 10000, reporter);
+    const wiki = await timedFetchJson("wikipedia.summary", wikiUrl, { "user-agent": OPEN_DATA_UA }, 10000, reporter);
     toolCalls.push(wiki.call);
 
     let summary: SummarySection | null = null;
@@ -173,7 +118,7 @@ export const researchAgent: Agent = {
 
     // Tool 2: Nominatim geocoding (permitted, no key; identifying UA per policy).
     const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(subject)}&format=jsonv2&limit=1`;
-    const nom = await timedFetchJson("nominatim.search", nomUrl, { "user-agent": UA }, 10000, reporter);
+    const nom = await timedFetchJson("nominatim.search", nomUrl, { "user-agent": OPEN_DATA_UA }, 10000, reporter);
     toolCalls.push(nom.call);
 
     let place: PlaceSection | null = null;
@@ -237,10 +182,9 @@ export const researchAgent: Agent = {
   },
 };
 
-/* -------------------------------------------------- scaffolds (awaiting) */
-
-export const codingAgent = awaitingAgent(codingSpec);
-export const opportunityAgent = awaitingAgent(opportunitySpec);
+/* coding and opportunity are real implementations: see ./coding and
+   ./opportunity. awaitingAgent (base.ts) remains the honest pattern for any
+   future registered-but-unimplemented agent. */
 
 /* -------------------------------------------------------------- registry */
 

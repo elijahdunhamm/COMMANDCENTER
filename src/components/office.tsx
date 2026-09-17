@@ -99,7 +99,7 @@ export function tooltipFor(s: OfficeAgentState): string {
     case "slump":
       return `${name} - run failed on task ${shortId(s.taskId)}, recovering`;
     case "refused":
-      return `${name} - refused a task (agent disabled)`;
+      return `${name} - refused a task (nothing was executed)`;
   }
 }
 

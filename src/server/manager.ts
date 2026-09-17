@@ -292,6 +292,9 @@ export async function executeCommand(
       agentId: agent.spec.id,
       data: {
         toolCallCount: execution.toolCalls.length,
+        // A sandbox-policy refusal is a real refusal, not a crash: the scene
+        // renders it in the refusal mode exactly like a disabled-agent refusal.
+        ...(execution.result?.kind === "agent.refused" ? { refused: true } : {}),
         ...(execution.error ? { error: execution.error } : {}),
       },
     },

@@ -55,6 +55,79 @@ export interface DisabledAgentResult {
   message: string;
 }
 
+/** A refusal recorded because the request violated an agent's safety policy
+ *  (for example a Coding Agent path outside its sandbox). The refused action
+ *  is named precisely: what was asked, why it was not done. */
+export interface AgentRefusalResult {
+  kind: "agent.refused";
+  agentId: AgentId;
+  /** Mechanical reason class, e.g. "outside_workspace". */
+  reason: string;
+  message: string;
+}
+
+/* --------------------------------------------------------- coding (sandbox) */
+
+/** One concrete operation the Coding Agent performed inside its sandbox. */
+export interface CodingOperation {
+  op: "list" | "read" | "write" | "command";
+  /** The path or command line the agent actually acted on. */
+  target: string;
+  ok: boolean;
+  /** Real output excerpt or a precise statement of what happened. */
+  detail: string | null;
+  /** True when the sandbox policy refused this operation and nothing ran. */
+  refused: boolean;
+  /** Typed refusal category when refused is true: honest reason code, not prose. */
+  refusalKind?: "outside_workspace" | "command_not_allowed" | "unsafe_characters" | "uninterpretable";
+}
+
+/** Structured output of the Coding Agent (sandboxed workspace work).
+ *  Every operation recorded here really happened inside the sandbox root;
+ *  refusals are listed as refused operations, never silently dropped. */
+export interface CodingWorkResult {
+  kind: "coding.work";
+  task: string;
+  /** The sandbox root the agent worked in (absolute path, honest scope). */
+  workspaceRoot: string;
+  operations: CodingOperation[];
+  /** Honest notes: unrecognized phrasing, skipped steps, why the task ended. */
+  notes: string[];
+}
+
+/* ----------------------------------------------------- opportunity (HN+wiki) */
+
+/** One Hacker News story, ranked deterministically from real API fields. */
+export interface OpportunityStory {
+  objectId: string;
+  title: string;
+  /** The story's external link, when it has one. */
+  url: string | null;
+  /** Discussion URL on Hacker News itself. */
+  hnUrl: string;
+  /** Real fields from the Algolia API; never imputed. */
+  points: number;
+  numComments: number;
+  createdAt: string;
+  author: string | null;
+  /** 1-based position under the stated deterministic ranking rule. */
+  rank: number;
+  provenance: Provenance;
+}
+
+/** Structured output of the Opportunity Agent (HN + Wikipedia scan). */
+export interface OpportunityScanResult {
+  kind: "opportunity.scan";
+  topic: string;
+  /** The exact deterministic ranking rule that ordered the stories. */
+  rankingRule: string;
+  stories: OpportunityStory[];
+  wiki: SummarySection | null;
+  /** True when the Hacker News source was unreachable/unusable. */
+  hnUnavailable: boolean;
+  notes: string[];
+}
+
 export interface SummarySection {
   text: string | null;
   title: string | null;
@@ -155,8 +228,11 @@ export interface DealFinderSearchResult {
 export type ResultPayload =
   | ResearchBriefResult
   | DealFinderSearchResult
+  | CodingWorkResult
+  | OpportunityScanResult
   | CapabilityMissingResult
-  | DisabledAgentResult;
+  | DisabledAgentResult
+  | AgentRefusalResult;
 
 /** Static registry entry. Agents are configuration, not hard-wired paths. */
 export interface AgentSpec {

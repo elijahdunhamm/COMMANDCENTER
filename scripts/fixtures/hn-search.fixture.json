@@ -1,0 +1,51 @@
+{
+  "_comment": "Recorded-shape fixture of an Algolia HN /api/v1/search response (hits shuffled on purpose). Smoke parses and ranks this WITHOUT any network access.",
+  "hits": [
+    {
+      "objectID": "31000002",
+      "created_at": "2024-01-03T09:15:00Z",
+      "title": "Show HN: I built a tiny tool that formats meeting notes",
+      "url": "https://example.dev/tiny-notes-tool",
+      "author": "builderana",
+      "points": 42,
+      "num_comments": 17
+    },
+    {
+      "objectID": "31000001",
+      "created_at": "2024-01-05T18:40:00Z",
+      "title": "The economics of local-first software",
+      "url": "https://example.dev/local-first-economics",
+      "author": "indiehacker",
+      "points": 210,
+      "num_comments": 95
+    },
+    {
+      "objectID": "31000004",
+      "created_at": "2024-01-02T11:00:00Z",
+      "title": "Ask HN: How do you validate a niche market?",
+      "url": null,
+      "author": "curiousfounder",
+      "points": 42,
+      "num_comments": 130
+    },
+    {
+      "objectID": "31000003",
+      "created_at": "2024-01-04T13:20:00Z",
+      "title": null,
+      "story_title": "A field guide to pricing your first product",
+      "title_missing_is_handled": true,
+      "url": "https://example.dev/pricing-guide",
+      "author": "pricer",
+      "points": 87,
+      "num_comments": 44
+    },
+    {
+      "objectID": "31000005",
+      "created_at": "2024-01-06T08:00:00Z",
+      "title": "",
+      "author": "ghost",
+      "points": 5,
+      "num_comments": 0
+    }
+  ]
+}

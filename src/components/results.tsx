@@ -4,10 +4,13 @@ import { Link } from "@tanstack/react-router";
 
 import { formatTime } from "~/components/status";
 import type {
+  AgentRefusalResult,
   CapabilityMissingResult,
+  CodingWorkResult,
   DealFinderHit,
   DealFinderSearchResult,
   DisabledAgentResult,
+  OpportunityScanResult,
   ResearchBriefResult,
   ResultPayload,
   SavedRecord,
@@ -366,6 +369,153 @@ export function DisabledAgentCard({ payload }: { payload: DisabledAgentResult })
   );
 }
 
+export function AgentRefusalCard({ payload }: { payload: AgentRefusalResult }) {
+  return (
+    <div>
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-err">
+        <WarningCircle aria-hidden className="size-4" />
+        Refused by agent policy
+      </h3>
+      <p className="mono mt-2 text-xs text-muted">reason: {payload.reason}</p>
+      <p className="mt-2 text-sm leading-relaxed text-body">{payload.message}</p>
+    </div>
+  );
+}
+
+export function CodingWorkCard({ payload }: { payload: CodingWorkResult }) {
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-heading">
+        Coding work in sandbox <span className="mono text-accent">{payload.workspaceRoot}</span>
+      </h3>
+      <ul className="mt-3 space-y-2">
+        {payload.operations.map((op, i) => (
+          <li key={i} className="border-t hairline pt-2">
+            <p className="mono text-xs">
+              <span
+                className={
+                  op.refused ? "text-err" : op.ok ? "text-ok" : "text-err"
+                }
+              >
+                {op.refused ? "refused" : op.ok ? "ok" : "failed"}
+              </span>{" "}
+              <span className="text-body">{op.op}</span>{" "}
+              <span className="text-muted">{op.target}</span>
+            </p>
+            {op.detail && (
+              <pre className="mono mt-1 overflow-x-auto whitespace-pre-wrap text-xs text-muted">
+                {op.detail}
+              </pre>
+            )}
+          </li>
+        ))}
+        {payload.operations.length === 0 && (
+          <li className="text-xs text-muted">No operations were executed.</li>
+        )}
+      </ul>
+      {payload.notes.length > 0 && (
+        <ul className="mt-3 space-y-1.5 border-t hairline pt-3">
+          {payload.notes.map((note, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-muted">
+              <WarningCircle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-wait" />
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function OpportunityScanCard({ payload }: { payload: OpportunityScanResult }) {
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-heading">
+        Opportunity scan: <span className="mono text-accent">{payload.topic}</span>
+      </h3>
+      <p className="mono mt-1 text-xs text-muted">ranking: {payload.rankingRule}</p>
+
+      {payload.wiki?.text && (
+        <div className="mt-3 border-t hairline pt-3">
+          <p className="text-sm leading-relaxed text-body">{payload.wiki.text}</p>
+          <div className="mt-2 space-y-1">
+            {payload.wiki.articleUrl && (
+              <p className="text-xs">
+                <a
+                  href={payload.wiki.articleUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent underline underline-offset-4 hover:text-heading"
+                >
+                  {payload.wiki.title ?? "Wikipedia article"}
+                  <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+                </a>
+              </p>
+            )}
+            <ProvenanceRow
+              label="context"
+              source={payload.wiki.provenance.source}
+              url={payload.wiki.provenance.url}
+              fetchedAt={payload.wiki.provenance.fetchedAt}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 border-t hairline pt-3">
+        {payload.stories.length > 0 ? (
+          <ul className="space-y-2">
+            {payload.stories.map((s) => (
+              <li key={s.objectId}>
+                <p className="text-sm text-body">
+                  <span className="mono text-muted">{s.rank}.</span>{" "}
+                  <a
+                    href={s.hnUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-accent underline underline-offset-4 hover:text-heading"
+                  >
+                    {s.title}
+                    <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+                  </a>
+                </p>
+                <p className="mono mt-0.5 text-xs text-muted">
+                  {s.points} points, {s.numComments} comments, posted {formatTime(s.createdAt)}
+                </p>
+                {s === payload.stories[0] && (
+                  <ProvenanceRow
+                    label="source"
+                    source={s.provenance.source}
+                    url={s.provenance.url}
+                    fetchedAt={s.provenance.fetchedAt}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted">
+            No Hacker News stories came back for this topic
+            {payload.hnUnavailable ? " (the source was unreachable)" : ""}. Nothing was invented
+            to fill the list.
+          </p>
+        )}
+      </div>
+
+      {payload.notes.length > 0 && (
+        <ul className="mt-3 space-y-1.5 border-t hairline pt-3">
+          {payload.notes.map((note, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-muted">
+              <WarningCircle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-wait" />
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /**
  * The save control shown on savable results. `onSaveTask` returns an error
  * message or null; the record itself is never optimistic, the parent refreshes
@@ -452,6 +602,27 @@ export function ResultCard({ payload, taskId, saved, onSaveTask }: {
     return (
       <div className="rounded-[10px] border border-err/40 bg-err/5 p-4">
         <DisabledAgentCard payload={payload} />
+      </div>
+    );
+  }
+  if (payload.kind === "agent.refused") {
+    return (
+      <div className="rounded-[10px] border border-err/40 bg-err/5 p-4">
+        <AgentRefusalCard payload={payload} />
+      </div>
+    );
+  }
+  if (payload.kind === "coding.work") {
+    return (
+      <div className="panel p-4">
+        <CodingWorkCard payload={payload} />
+      </div>
+    );
+  }
+  if (payload.kind === "opportunity.scan") {
+    return (
+      <div className="panel p-4">
+        <OpportunityScanCard payload={payload} />
       </div>
     );
   }

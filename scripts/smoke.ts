@@ -14,11 +14,16 @@
  * Exit code 0 = all assertions passed.
  */
 import { executeCommand, getDashboardState, deleteSavedResearch, getEventsSince, getSavedLibrary, getTaskDetail, saveResultToLibrary, setAgentEnabledState } from "../src/server/manager";
-import { classifyWithFallback } from "../src/server/model";
+import { classifyCommand, classifyWithFallback, llmConfig } from "../src/server/model";
 import { parseDealfinderQuery } from "../src/server/dealfinder/parser";
 import { overpassEndpointCandidates } from "../src/server/dealfinder/overpass";
-import { readFileSync } from "node:fs";
-import type { AgentView, DealFinderSearchResult, DisabledAgentResult, OrchestrationEvent, ResearchBriefResult } from "../src/server/types";
+import { parseCodingDirectives } from "../src/server/agents/coding";
+import { parseHnHit, rankStories } from "../src/server/agents/opportunity";
+import { checkCommandPolicy } from "../src/server/tools/workspace";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type { AgentRefusalResult, AgentView, CodingWorkResult, DealFinderSearchResult, DisabledAgentResult, OpportunityScanResult, OrchestrationEvent, ResearchBriefResult } from "../src/server/types";
 
 let failures = 0;
 
@@ -96,22 +101,106 @@ async function main(): Promise<void> {
   const researchAgentView = state.agents.find((a) => a.id === "research");
   check("research agent shows completed status after real run", researchAgentView?.status === "completed", String(researchAgentView?.status));
 
-  // 2. Scaffolded agent must fail honestly, never fabricate.
-  console.log("\n-- executing: 'Build a script that renames files' (coding, scaffolded) --");
-  const res2 = await executeCommand("Build a script that renames files");
+  // 2. Coding Agent: real sandboxed work via the deterministic router.
+  // A temp AGENT_WORKSPACE keeps the sandbox disposable; no network is used.
+  console.log("\n-- coding agent: sandboxed list/write/version via fallback router --");
+  const ws = mkdtempSync(path.join(tmpdir(), "smoke-agent-ws-"));
+  writeFileSync(path.join(ws, "hello.txt"), "hello from the smoke workspace\n", "utf8");
+  const prevWs = process.env.AGENT_WORKSPACE;
+  process.env.AGENT_WORKSPACE = ws;
+  const res2 = await executeCommand("list the files in the workspace and write notes.txt with smoke was here");
   check("second command ok", res2.ok === true, JSON.stringify(res2));
   const state2 = await getDashboardState();
   const task2 = state2.tasks.find((t) => t.id === res2.taskId);
   check("coding task routed to coding agent", task2?.agentId === "coding", JSON.stringify(task2));
-  check("coding task honestly failed", task2?.status === "failed", String(task2?.status));
+  check("coding task completed via fallback router", task2?.status === "completed" && task2.router === "fallback", JSON.stringify(task2));
   const result2 = res2.taskId ? state2.results[res2.taskId] : undefined;
+  const codingPayload = result2?.payload as CodingWorkResult | undefined;
+  check("coding result kind is coding.work", codingPayload?.kind === "coding.work", String(result2?.payload?.kind));
+  check("coding result names the real sandbox root", codingPayload?.workspaceRoot === path.resolve(ws), codingPayload?.workspaceRoot);
   check(
-    "scaffold reports capability_missing, no fabricated output",
-    result2?.payload.kind === "agent.capability_missing",
-    JSON.stringify(result2 ?? null),
+    "coding operations: list + write really executed",
+    codingPayload?.operations.length === 2 &&
+      codingPayload.operations[0]?.op === "list" &&
+      codingPayload.operations[0]?.ok === true &&
+      codingPayload.operations[1]?.op === "write" &&
+      codingPayload.operations[1]?.ok === true,
+    JSON.stringify(codingPayload?.operations),
+  );
+  const notesOnDisk = codingPayload ? await import("node:fs/promises").then((fs) => fs.readFile(path.join(ws, "notes.txt"), "utf8")) : "";
+  check("written file really exists on disk with the requested content", notesOnDisk.includes("smoke was here"), JSON.stringify(notesOnDisk));
+  const codingRun = res2.taskId ? state2.runs[res2.taskId]?.[0] : undefined;
+  check(
+    "coding tool calls are workspace-local (no network requests)",
+    (codingRun?.toolCalls.length ?? 0) === 2 && codingRun!.toolCalls.every((c) => c.request.includes(ws) || c.request.startsWith("workspace ")),
+    JSON.stringify(codingRun?.toolCalls),
   );
   const codingAgentView = state2.agents.find((a) => a.id === "coding");
-  check("coding agent shows failed status", codingAgentView?.status === "failed", String(codingAgentView?.status));
+  check("coding agent shows completed status after a real run", codingAgentView?.status === "completed", String(codingAgentView?.status));
+
+  console.log("\n-- coding agent: honest refusals (outside sandbox, off-whitelist) --");
+  const resRef = await executeCommand("cat /etc/passwd");
+  const stateRef = await getDashboardState();
+  const taskRef = stateRef.tasks.find((t) => t.id === resRef.taskId);
+  check("outside-sandbox read is routed to the coding agent", taskRef?.agentId === "coding", JSON.stringify(taskRef));
+  check("outside-sandbox read is failed honestly, not silently skipped", taskRef?.status === "failed", String(taskRef?.status));
+  const refusePayload = resRef.taskId ? (stateRef.results[resRef.taskId]?.payload as AgentRefusalResult | undefined) : undefined;
+  check(
+    "refusal result kind is agent.refused with reason outside_workspace",
+    refusePayload?.kind === "agent.refused" && refusePayload.reason === "outside_workspace",
+    JSON.stringify(refusePayload),
+  );
+  check("refusal message names the sandbox and states nothing was executed", Boolean(refusePayload?.message.includes("nothing was read, written, or executed")), refusePayload?.message);
+  const resCmd = await executeCommand("run curl https://example.com");
+  const stateCmd = await getDashboardState();
+  const cmdPayload = resCmd.taskId ? (stateCmd.results[resCmd.taskId]?.payload as AgentRefusalResult | undefined) : undefined;
+  check(
+    "non-whitelisted command is refused as command_not_allowed",
+    cmdPayload?.kind === "agent.refused" && cmdPayload.reason === "command_not_allowed" && cmdPayload.message.includes("curl"),
+    JSON.stringify(cmdPayload),
+  );
+  check(
+    "no https request was ever recorded for the refused runs",
+    [resRef.taskId, resCmd.taskId].every(
+      (id) => id == null || (stateRef.runs[id] ?? stateCmd.runs[id] ?? []).every((r) => r.toolCalls.every((c) => !c.request.startsWith("https://"))),
+    ),
+    "all tool call requests are workspace-local",
+  );
+  const resUnk = await executeCommand("build a script that renames files");
+  const stateUnk = await getDashboardState();
+  const unkPayload = resUnk.taskId ? (stateUnk.results[resUnk.taskId]?.payload as AgentRefusalResult | undefined) : undefined;
+  check(
+    "a request with no permitted operation is refused with guidance, nothing executed",
+    unkPayload?.kind === "agent.refused" && unkPayload.reason === "uninterpretable" && unkPayload.message.includes("list files"),
+    JSON.stringify(unkPayload),
+  );
+
+  console.log("\n-- coding tool units: directive parsing and command policy --");
+  const dirs = parseCodingDirectives("list the files and read hello.txt then run grep hello hello.txt");
+  check(
+    "directive parser maps list/read/command segments",
+    dirs.directives.length === 3 &&
+      dirs.directives[0]?.op === "list" &&
+      dirs.directives[1]?.op === "read" &&
+      dirs.directives[1]?.target === "hello.txt" &&
+      dirs.directives[2]?.op === "command" &&
+      dirs.directives[2]?.target === "grep hello hello.txt",
+    JSON.stringify(dirs),
+  );
+  const pol1 = checkCommandPolicy("grep -rn pattern .");
+  const pol2 = checkCommandPolicy("rm -rf /");
+  const pol3 = checkCommandPolicy("find . -delete");
+  const pol4 = checkCommandPolicy("bun --version");
+  const pol5 = checkCommandPolicy("cat a.txt > b.txt");
+  check(
+    "command policy: grep allowed, rm refused, find -delete refused, bun --version allowed, redirect refused",
+    pol1.allowed === true &&
+      pol2.allowed === false &&
+      pol3.allowed === false &&
+      pol4.allowed === true &&
+      pol5.allowed === false,
+    JSON.stringify([pol1.reason, pol2.reason, pol3.reason, pol4.reason, pol5.reason]),
+  );
 
   // 3. Task detail assembly: full timeline of task 1, both store modes.
   console.log("\n-- task detail: full timeline assembly --");
