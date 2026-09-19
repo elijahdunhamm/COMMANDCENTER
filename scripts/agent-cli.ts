@@ -79,6 +79,36 @@ function renderPayload(p: ResultPayload): string[] {
       for (const n of p.notes) lines.push(`  note: ${n}`);
       break;
     }
+    case "opportunity.leads": {
+      lines.push(p.websiteListingNote);
+      if (p.askedForLocation) {
+        lines.push("No location could be resolved, so no search area was guessed.");
+        lines.push("Run it again with a real place, e.g. \"find leads for web design clients in Austin\".");
+      } else if (p.sourceUnavailable) {
+        lines.push("Search source unavailable; no leads were fetched. Attempted request:");
+        lines.push(`  ${p.overpassUrl ?? "(no request recorded)"}`);
+      } else if (p.leads.length === 0) {
+        lines.push(
+          `No businesses matching the filter were found within ${p.radiusMiles} miles of ${p.origin?.label ?? "the search point"} (see notes).`,
+        );
+      } else {
+        lines.push(
+          `${p.leads.length} lead(s) within ${p.radiusMiles} miles of ${p.origin?.label ?? "the search point"}, ranked ${p.rankingRule}:`,
+        );
+        for (const l of p.leads) {
+          lines.push(`  ${l.name} [${l.category}] ${l.distanceMiles.toFixed(1)} mi (computed)`);
+          lines.push(`     address: ${l.address ?? "not listed"} | phone: ${l.phone ?? "not listed"}`);
+          lines.push(`     ${l.osmUrl}`);
+        }
+        if (p.overpassUrl) {
+          const served = p.servedBy ? `${p.servedBy}${p.fallbackUsed ? " (fallback endpoint)" : ""}` : "unknown endpoint";
+          lines.push(`Overpass request answered by ${served}:`);
+          lines.push(`  ${p.overpassUrl}`);
+        }
+      }
+      for (const n of p.notes) lines.push(`  note: ${n}`);
+      break;
+    }
     case "agent.refused":
       lines.push(`Refused (${p.reason}): ${p.message}`);
       break;

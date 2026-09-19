@@ -10,6 +10,8 @@ import type {
   DealFinderHit,
   DealFinderSearchResult,
   DisabledAgentResult,
+  OpportunityLead,
+  OpportunityLeadsResult,
   OpportunityScanResult,
   ResearchBriefResult,
   ResultPayload,
@@ -359,6 +361,168 @@ export function DealFinderResultCard({ payload }: { payload: DealFinderSearchRes
   );
 }
 
+function OpportunityLeadRow({ lead }: { lead: OpportunityLead }) {
+  return (
+    <li className="py-3.5 first:pt-0 last:pb-0">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm font-semibold text-heading">{lead.name}</p>
+        <p className="mono shrink-0 text-xs text-accent" title="Computed straight-line distance from the search point">
+          {lead.distanceMiles.toFixed(1)} mi
+        </p>
+      </div>
+      <p className="mono mt-1 text-[11px] text-muted">{lead.category}</p>
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+        <div className="flex items-start gap-1.5">
+          <dt className="flex items-center gap-1 text-muted">
+            <MapPin aria-hidden className="size-3 shrink-0" />
+            <span className="sr-only">Address</span>
+          </dt>
+          <dd className="text-body">{lead.address ?? <NotListed />}</dd>
+        </div>
+        <div className="flex items-start gap-1.5">
+          <dt className="flex items-center gap-1 text-muted">
+            <Phone aria-hidden className="size-3 shrink-0" />
+            <span className="sr-only">Phone</span>
+          </dt>
+          <dd className="text-body">{lead.phone ?? <NotListed />}</dd>
+        </div>
+      </dl>
+      <p className="mt-1.5 text-xs">
+        <a
+          href={lead.osmUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent underline underline-offset-4 hover:text-heading"
+        >
+          View on OpenStreetMap
+          <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+        </a>
+      </p>
+    </li>
+  );
+}
+
+export function OpportunityLeadsCard({ payload }: { payload: OpportunityLeadsResult }) {
+  const radiusLabel = `${Number(payload.radiusMiles.toFixed(payload.radiusMiles % 1 === 0 ? 0 : 1))} mile radius`;
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-heading">
+        Lead finder: <span className="mono text-accent">{payload.audience ?? "local businesses"}</span>
+        {payload.origin ? (
+          <>
+            {" "}near <span className="mono text-accent">{payload.origin.label}</span>
+          </>
+        ) : null}
+      </h3>
+
+      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+        <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-muted">
+          {radiusLabel}
+          {payload.radiusSource === "default" ? " (default)" : ""}
+        </span>
+        {payload.servedFromCache && (
+          <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-muted">
+            identical query served from in-process cache
+          </span>
+        )}
+        {payload.fallbackUsed && payload.servedBy && (
+          <span className="mono rounded-[6px] border hairline bg-panel-2 px-1.5 py-0.5 text-wait">
+            fallback endpoint served this search: {payload.servedBy}
+          </span>
+        )}
+      </div>
+
+      <p className="mt-3 flex items-start gap-2 rounded-[10px] border hairline bg-panel-2 p-3 text-sm leading-relaxed text-body">
+        <WarningCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-wait" />
+        <span>{payload.websiteListingNote}</span>
+      </p>
+
+      {payload.askedForLocation ? (
+        <p className="mt-3 flex items-start gap-2 text-sm leading-relaxed text-body">
+          <MapPin aria-hidden className="mt-0.5 size-4 shrink-0 text-wait" />
+          <span>
+            No location could be resolved from this command, so no search area was guessed.
+            Run it again with a real place, e.g. "find leads for web design clients in Austin",
+            or coordinates, e.g. "find leads near 30.2672, -97.7431".
+          </span>
+        </p>
+      ) : payload.sourceUnavailable ? (
+        <div className="mt-3 rounded-[10px] border border-err/40 bg-err/5 p-3">
+          <p className="flex items-start gap-2 text-sm leading-relaxed text-body">
+            <WarningCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-err" />
+            <span>
+              Search source unavailable. The OpenStreetMap Overpass request did not return
+              usable data after the fallback chain was tried, so no leads could be fetched.
+              Nothing was invented to fill the gap; the exact request is linked below.
+            </span>
+          </p>
+          {payload.overpassUrl && (
+            <p className="mono mt-2 text-xs text-muted">
+              Attempted request:{" "}
+              <a
+                href={payload.overpassUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent underline underline-offset-4 hover:text-heading"
+              >
+                view request
+                <ArrowSquareOut aria-hidden className="ml-0.5 inline size-3 align-baseline" />
+              </a>
+            </p>
+          )}
+        </div>
+      ) : payload.leads.length === 0 ? (
+        <p className="mt-3 flex items-start gap-2 text-sm leading-relaxed text-muted">
+          <NoteBlank aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>
+            No businesses matching the filter were found in OpenStreetMap data for this area
+            and radius. Coverage varies by area; that is a property of the map data, not a
+            filtered opinion.
+          </span>
+        </p>
+      ) : (
+        <div className="mt-3">
+          <p className="text-xs text-muted">
+            {payload.leads.length} lead{payload.leads.length === 1 ? "" : "s"}, ranked{" "}
+            {payload.rankingRule}
+            {payload.elementsFetched != null && (
+              <>; the Overpass query returned {payload.elementsFetched} element(s)</>
+            )}
+            .
+          </p>
+          <ul className="mt-1 divide-y hairline">
+            {payload.leads.map((lead) => (
+              <OpportunityLeadRow key={`${lead.osmType}-${lead.osmId}`} lead={lead} />
+            ))}
+          </ul>
+          {payload.overpassUrl && (
+            <div className="mt-3 border-t hairline pt-2">
+              <ProvenanceRow
+                label="All leads"
+                source="OpenStreetMap via Overpass API"
+                url={payload.overpassUrl}
+                fetchedAt={payload.leads[0]?.provenance.fetchedAt ?? new Date().toISOString()}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {payload.notes.length > 0 && (
+        <ul className="mt-4 space-y-1.5 border-t hairline pt-3">
+          {payload.notes.map((note, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-muted">
+              <WarningCircle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-wait" />
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function CapabilityMissingCard({ payload }: { payload: CapabilityMissingResult }) {
   return (
     <div>
@@ -643,6 +807,13 @@ export function ResultCard({ payload, taskId, saved, onSaveTask }: {
     return (
       <div className="panel p-4">
         <OpportunityScanCard payload={payload} />
+      </div>
+    );
+  }
+  if (payload.kind === "opportunity.leads") {
+    return (
+      <div className="panel p-4">
+        <OpportunityLeadsCard payload={payload} />
       </div>
     );
   }
