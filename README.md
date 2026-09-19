@@ -309,6 +309,20 @@ reduces the subject to its actual topic with deterministic prefix stripping
 the whole sentence; if stripping would leave only stopwords, the full subject
 is queried instead), and the result records which query was really used
 (`hnQuery` / `hnQuerySource`) alongside the original subject.
+The Opportunity Agent also finds leads for web-design services: a command like
+"find leads for web design clients in Austin" geocodes the place via the shared
+Nominatim path, then queries OpenStreetMap through the shared Overpass
+connector (same fallback chain, cache, and provenance) for named businesses
+with a shop/amenity/craft/office/tourism tag and neither a `website` nor a
+`contact:website` tag, within a radius (default 10 miles, "within N miles"
+parsed like DealFinder). Leads are ranked deterministically (computed distance
+ascending, ties by name), capped at 25, and each carries its OSM object URL,
+address and phone only when OSM lists them, and the exact Overpass request URL
+plus the endpoint that answered. The honesty framing is fixed and appears in
+every result: a lead means no website listed on OpenStreetMap, a listing gap
+in the map data, never a verified fact about the business. With no location,
+the agent returns the same structured ask-for-location outcome DealFinder
+uses; a location is never guessed.
 
 The Research Agent resolves near-miss subjects honestly: when the direct
 Wikipedia title lookup returns 404 ("Eifle Tower"), it runs one opensearch

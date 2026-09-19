@@ -5,10 +5,13 @@
  * provenance come back. Also proves: scaffolded agents fail honestly, task
  * detail assembles fully, the saved-research library does real idempotent CRUD,
  * a disabled agent refuses tasks with an honest message (and un-disables),
- * orchestration events are real and ordered, and the DealFinder Agent parses
+ * orchestration events are real and ordered, the DealFinder Agent parses
  * local-service commands and searches OpenStreetMap via Overpass with per-hit
  * provenance and honest unavailable/empty/ask-for-location paths (the smoke
- * tolerates Overpass degradation explicitly; it asserts honesty, not uptime).
+ * tolerates Overpass degradation explicitly; it asserts honesty, not uptime),
+ * and the Opportunity Agent lead finder finds named businesses with no
+ * website listed on OpenStreetMap via the same connector, with fixture-based
+ * filter/ranking units plus weather-tolerant live runs.
  *
  * Run: bun run scripts/smoke.ts
  * Exit code 0 = all assertions passed.
@@ -16,15 +19,16 @@
 import { executeCommand, getDashboardState, deleteSavedResearch, getEventsSince, getSavedLibrary, getTaskDetail, saveResultToLibrary, setAgentEnabledState } from "../src/server/manager";
 import { classifyCommand, classifyWithFallback, llmConfig } from "../src/server/model";
 import { parseDealfinderQuery } from "../src/server/dealfinder/parser";
-import { overpassEndpointCandidates } from "../src/server/dealfinder/overpass";
+import { overpassEndpointCandidates, bboxForRadius, buildOverpassQuery } from "../src/server/dealfinder/overpass";
 import { parseCodingDirectives } from "../src/server/agents/coding";
-import { parseHnHit, rankStories, extractSearchTopic } from "../src/server/agents/opportunity";
+import { parseHnHit, rankStories, extractSearchTopic, isLeadCommand, extractAudience, leadSelectors, filterLeadElements, rankLeads, LEAD_CAP, LEAD_FETCH_LIMIT } from "../src/server/agents/opportunity";
 import { isPlausibleWikiHit, pickPlausibleOpenSearchHit } from "../src/server/agents";
 import { checkCommandPolicy } from "../src/server/tools/workspace";
+import type { OverpassElement } from "../src/server/dealfinder/overpass";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentRefusalResult, AgentView, CodingWorkResult, DealFinderSearchResult, DisabledAgentResult, OpportunityScanResult, OrchestrationEvent, ResearchBriefResult } from "../src/server/types";
+import type { AgentRefusalResult, AgentView, CodingWorkResult, DealFinderSearchResult, DisabledAgentResult, OpportunityLeadsResult, OpportunityScanResult, OrchestrationEvent, ResearchBriefResult } from "../src/server/types";
 
 let failures = 0;
 
@@ -683,6 +687,253 @@ async function main(): Promise<void> {
     JSON.stringify(lstate.messages.filter((m) => m.taskId === lres.taskId).map((m) => m.content)),
   );
 
+  // 9. Opportunity Agent lead finder. Unit checks first (fixtures, no
+  // network) for the missing-website Overpass filter and the lead ranking;
+  // then live runs with the same source-weather tolerance as the dealfinder
+  // checks: they assert honesty and structure, never source uptime.
+  console.log("\n-- leads: deterministic units (no network) --");
+  check("lead finder triggers on find-leads phrasing", isLeadCommand("find leads for web design clients in Austin") === true, String(isLeadCommand("find leads for web design clients in Austin")));
+  check("lead finder triggers on find-me-leads phrasing", isLeadCommand("find me leads in Round Rock") === true, String(isLeadCommand("find me leads in Round Rock")));
+  check("lead finder ignores explicit HN scans", isLeadCommand("scan hacker news for leads about AI tools") === false, String(isLeadCommand("scan hacker news for leads about AI tools")));
+  check("lead finder ignores non-lead commands", isLeadCommand("Research the Eiffel Tower") === false, String(isLeadCommand("Research the Eiffel Tower")));
+  check(
+    "fallback router routes find-leads phrasing to the opportunity intent",
+    classifyWithFallback("find leads for web design clients in Austin").intent === "opportunity",
+    JSON.stringify(classifyWithFallback("find leads for web design clients in Austin")),
+  );
+  check(
+    "audience phrase captured from the command",
+    extractAudience("find leads for web design clients in Austin") === "web design clients",
+    JSON.stringify(extractAudience("find leads for web design clients in Austin")),
+  );
+  check(
+    "no audience phrase when the command has none",
+    extractAudience("find leads in Austin") === null,
+    JSON.stringify(extractAudience("find leads in Austin")),
+  );
+
+  const leadQuery = buildOverpassQuery(leadSelectors(), bboxForRadius(30.2672, -97.7431, 10), LEAD_FETCH_LIMIT);
+  check(
+    "lead Overpass query requires a name and excludes both website keys",
+    leadQuery.includes('["name"]') && leadQuery.includes('[!"website"]') && leadQuery.includes('[!"contact:website"]'),
+    leadQuery,
+  );
+  check(
+    "lead Overpass query covers all five category keys",
+    ["shop", "amenity", "craft", "office", "tourism"].every((k) => leadQuery.includes(`node["${k}"]`)),
+    leadQuery,
+  );
+  check(
+    "lead Overpass query fetches above the cap so ranking precedes capping",
+    leadQuery.includes(`out center ${LEAD_FETCH_LIMIT}`) && LEAD_FETCH_LIMIT > LEAD_CAP,
+    leadQuery.slice(-40),
+  );
+
+  // Fixture: raw Overpass-shaped elements run through the exact pure filter
+  // the agent uses. This pins the missing-website filter logic with no network.
+  const leadOrigin = { lat: 30.2672, lon: -97.7431 };
+  const leadFixture: OverpassElement[] = [
+    { type: "node", id: 1, lat: 30.268, lon: -97.744, center: null, tags: { name: "Main Street Cuts", shop: "hairdresser", phone: "+1 512 555 0100", "addr:street": "Main St" } },
+    { type: "node", id: 2, lat: 30.268, lon: -97.744, center: null, tags: { name: "Already Online", shop: "cafe", website: "https://already.example" } },
+    { type: "node", id: 3, lat: 30.268, lon: -97.744, center: null, tags: { name: "Webbed Homes", office: "estate_agent", "contact:website": "https://webbed.example" } },
+    { type: "node", id: 4, lat: 30.268, lon: -97.744, center: null, tags: { shop: "clothes" } },
+    { type: "node", id: 5, lat: 30.5, lon: -97.7431, center: null, tags: { name: "Far Away Shop", shop: "bakery" } },
+    { type: "node", id: 6, lat: 30.268, lon: -97.744, center: null, tags: { amenity: "bench", name: "A Bench" } },
+    { type: "node", id: 1, lat: 30.268, lon: -97.744, center: null, tags: { name: "Main Street Cuts", shop: "hairdresser" } },
+    { type: "node", id: 7, lat: null, lon: null, center: null, tags: { name: "No Coords", shop: "car_repair" } },
+    { type: "node", id: 8, lat: 30.269, lon: -97.745, center: null, tags: { name: "Mobile Only", craft: "plumber", "contact:mobile": "+1 512 555 0199" } },
+  ];
+  const lf = filterLeadElements(leadFixture, leadOrigin, 10);
+  check(
+    "fixture keeps exactly the named, categorized, website-less elements",
+    lf.leads.length === 3,
+    JSON.stringify(lf.leads.map((l) => l.name)),
+  );
+  check(
+    "website-tagged elements excluded by the filter (both website and contact:website)",
+    lf.skips.hasWebsiteTag === 2,
+    JSON.stringify(lf.skips),
+  );
+  check("unnamed element excluded, not named by guesswork", lf.skips.noName === 1, JSON.stringify(lf.skips));
+  check(
+    "out-of-radius element excluded (bbox is square, the search area is a circle)",
+    lf.skips.outsideRadius === 1,
+    JSON.stringify(lf.skips),
+  );
+  check(
+    "coordinate-less element excluded, duplicate collapsed",
+    lf.skips.noCoords === 1 && lf.skips.duplicates === 1,
+    JSON.stringify(lf.skips),
+  );
+  const keptLead = lf.leads.find((l) => l.name === "Main Street Cuts");
+  check(
+    "kept lead carries name, real category tags, computed distance, OSM url, address, and phone only from phone/contact:phone",
+    Boolean(keptLead) && keptLead!.category === "shop=hairdresser" && keptLead!.phone === "+1 512 555 0100" &&
+      keptLead!.address === "Main St" && keptLead!.osmUrl === "https://www.openstreetmap.org/node/1" && keptLead!.distanceMiles < 1,
+    JSON.stringify(keptLead),
+  );
+  const mobileOnlyLead = lf.leads.find((l) => l.name === "Mobile Only");
+  check(
+    "contact:mobile is deliberately not collected as a phone",
+    mobileOnlyLead != null && mobileOnlyLead.phone === null,
+    JSON.stringify(mobileOnlyLead),
+  );
+  const benchLead = lf.leads.find((l) => l.name === "A Bench");
+  check(
+    "named amenities are reported with their real tags (the amenity caveat, stated in results)",
+    benchLead != null && benchLead.category === "amenity=bench",
+    JSON.stringify(benchLead),
+  );
+
+  const rankedLeads = rankLeads([
+    { osmType: "node", osmId: 21, osmUrl: "https://www.openstreetmap.org/node/21", name: "B Alpha", category: "shop=x", address: null, phone: null, lat: 0, lon: 0, distanceMiles: 2.0, distanceKm: 3.21869 },
+    { osmType: "node", osmId: 22, osmUrl: "https://www.openstreetmap.org/node/22", name: "A Beta", category: "shop=x", address: null, phone: null, lat: 0, lon: 0, distanceMiles: 2.0, distanceKm: 3.21869 },
+    { osmType: "node", osmId: 23, osmUrl: "https://www.openstreetmap.org/node/23", name: "Z Far", category: "shop=x", address: null, phone: null, lat: 0, lon: 0, distanceMiles: 1.0, distanceKm: 1.60934 },
+  ]);
+  check(
+    "lead ranking is distance ascending, ties broken by name",
+    rankedLeads.map((l) => l.name).join(",") === "Z Far,A Beta,B Alpha",
+    JSON.stringify(rankedLeads.map((l) => l.name)),
+  );
+
+  console.log("\n-- leads: no location means a structured ask, never a guess --");
+  const nlres = await executeCommand("find leads for web design clients");
+  check("no-location lead command executed ok", nlres.ok === true && Boolean(nlres.taskId), JSON.stringify(nlres));
+  const nlstate = await getDashboardState();
+  const nltask = nlstate.tasks.find((t) => t.id === nlres.taskId);
+  check(
+    "no-location lead command routed to the opportunity agent",
+    nltask?.intent === "opportunity" && nltask?.agentId === "opportunity",
+    JSON.stringify(nltask),
+  );
+  const nlpayload = (nlres.taskId ? nlstate.results[nlres.taskId]?.payload : undefined) as OpportunityLeadsResult | undefined;
+  check(
+    "lead result kind is opportunity.leads with the honest ask-for-location state",
+    nlpayload?.kind === "opportunity.leads" && nlpayload?.askedForLocation === true && nlpayload?.origin === null && nlpayload?.leads.length === 0,
+    JSON.stringify({ kind: nlpayload?.kind, asked: nlpayload?.askedForLocation, n: nlpayload?.leads.length }),
+  );
+  check(
+    "the lead ask explains how to provide a location",
+    (nlpayload?.notes ?? []).some((n) => n.includes("find leads for web design clients in Austin")),
+    JSON.stringify(nlpayload?.notes),
+  );
+  check(
+    "every lead result carries the listing-gap honesty framing",
+    nlpayload?.websiteListingNote.includes("no website listed on OpenStreetMap") === true,
+    JSON.stringify(nlpayload?.websiteListingNote),
+  );
+  const nlrun = nlres.taskId ? nlstate.runs[nlres.taskId]?.[0] : undefined;
+  check(
+    "no tool calls were made for the lead ask-for-location run",
+    nlrun?.toolCalls.length === 0,
+    JSON.stringify(nlrun?.toolCalls),
+  );
+
+  console.log("\n-- leads: live run against a real city (source-weather tolerant) --");
+  const lfres = await executeCommand("find leads for web design clients in Austin");
+  check("lead command executed ok", lfres.ok === true && Boolean(lfres.taskId), JSON.stringify(lfres));
+  const lfstate = await getDashboardState();
+  const lftask = lfstate.tasks.find((t) => t.id === lfres.taskId);
+  check(
+    "live lead command routed to the opportunity agent and completed",
+    lftask?.intent === "opportunity" && lftask?.agentId === "opportunity" && lftask?.status === "completed",
+    JSON.stringify(lftask),
+  );
+  const lfpayload = (lfres.taskId ? lfstate.results[lfres.taskId]?.payload : undefined) as OpportunityLeadsResult | undefined;
+  check("live result kind is opportunity.leads", lfpayload?.kind === "opportunity.leads", String(lfpayload?.kind));
+  check(
+    "every lead result carries the listing-gap honesty framing (live run too)",
+    lfpayload?.websiteListingNote.includes("no website listed on OpenStreetMap") === true,
+    JSON.stringify(lfpayload?.websiteListingNote),
+  );
+  const lfrun = lfres.taskId ? lfstate.runs[lfres.taskId]?.[0] : undefined;
+  const lfGeocodeOk = Boolean(lfrun?.toolCalls.some((c) => c.tool === "nominatim.search" && c.ok));
+  if (lfGeocodeOk) {
+    check(
+      "geocoded origin carried real Nominatim provenance",
+      lfpayload?.origin?.kind === "geocoded" && lfpayload?.origin?.provenance?.url.startsWith("https://nominatim.openstreetmap.org/") === true,
+      JSON.stringify(lfpayload?.origin),
+    );
+  }
+  const lfLeads = lfpayload?.leads ?? [];
+  if (lfpayload?.askedForLocation) {
+    check(
+      "when geocoding fails the lead run still completes with an honest ask",
+      (lfpayload?.notes ?? []).some((n) => n.includes("could not be geocoded") || n.includes("Geocoding for")),
+      JSON.stringify(lfpayload?.notes),
+    );
+    console.log("   (Nominatim degraded right now: the honest ask-for-location lead path was verified)");
+  } else if (lfpayload?.sourceUnavailable) {
+    check(
+      "unavailable lead path carries the honest note and the exact request URL",
+      (lfpayload?.notes ?? []).some((n) => n.includes("unavailable")) && Boolean(lfpayload?.overpassUrl?.startsWith("https://")),
+      JSON.stringify(lfpayload?.notes),
+    );
+    check(
+      "unavailable lead note lists every endpoint that was tried",
+      overpassEndpointCandidates().every((u) => (lfpayload?.notes ?? []).some((n) => n.includes(u))),
+      JSON.stringify(lfpayload?.notes),
+    );
+    console.log("   (Overpass degraded right now: the honest-unavailable lead path was verified)");
+  } else {
+    check(
+      "live lead search has an origin and a request URL",
+      Boolean(lfpayload?.origin) && Boolean(lfpayload?.overpassUrl?.startsWith("https://")),
+      JSON.stringify({ origin: lfpayload?.origin, url: lfpayload?.overpassUrl }),
+    );
+    check(
+      "lead cap respected",
+      lfLeads.length <= lfpayload!.leadCap && lfpayload!.leadCap === LEAD_CAP,
+      JSON.stringify({ n: lfLeads.length, cap: lfpayload?.leadCap }),
+    );
+    check(
+      "every lead carries provenance and an OSM object URL",
+      lfLeads.every((l) => l.provenance.source.includes("Overpass") && l.provenance.url.startsWith("https://") && !Number.isNaN(Date.parse(l.provenance.fetchedAt)) && l.osmUrl.startsWith("https://www.openstreetmap.org/")),
+      JSON.stringify(lfLeads[0]),
+    );
+    check(
+      "leads are ranked nearest-first by computed distance",
+      lfLeads.every((l) => l.distanceMiles >= 0) && lfLeads.every((l, i) => i === 0 || l.distanceMiles >= lfLeads[i - 1].distanceMiles),
+      JSON.stringify(lfLeads.slice(0, 3).map((l) => Number(l.distanceMiles.toFixed(2)))),
+    );
+    check(
+      "every lead is inside the radius",
+      lfLeads.every((l) => l.distanceMiles <= (lfpayload?.radiusMiles ?? 0) + 0.0001),
+      JSON.stringify(lfLeads.length > 0 ? Math.max(...lfLeads.map((l) => l.distanceMiles)) : null),
+    );
+    check(
+      "the payload never claims a verified absence: the banned phrasing is nowhere in it",
+      !JSON.stringify(lfpayload).includes("has no website"),
+      "payload wording check",
+    );
+    const lfServedBy = lfpayload?.servedBy ?? null;
+    check(
+      "servedBy records the endpoint that answered the request",
+      lfServedBy == null || overpassEndpointCandidates().some((u) => lfServedBy === u || (lfpayload?.overpassUrl ?? "").startsWith(lfServedBy)),
+      JSON.stringify({ servedBy: lfpayload?.servedBy, url: lfpayload?.overpassUrl }),
+    );
+    if (lfpayload?.fallbackUsed) {
+      check(
+        "when a fallback endpoint served the lead search, one honest note says so",
+        (lfpayload?.notes ?? []).some((n) => n.includes("fallback endpoint")),
+        JSON.stringify(lfpayload?.notes),
+      );
+    }
+    if (lfLeads.length === 0) {
+      check(
+        "empty lead area explains itself and cites the request URL",
+        (lfpayload?.notes ?? []).some((n) => n.includes("No businesses matching the filter")) && Boolean(lfpayload?.overpassUrl),
+        JSON.stringify(lfpayload?.notes),
+      );
+    }
+  }
+  const lfEvents = (await getEventsSince(0)).events.filter((e) => e.taskId === lfres.taskId);
+  check(
+    "lead events record the overpass.search tool call (started and finished)",
+    lfEvents.some((e) => e.type === "tool_call.started" && e.data.tool === "overpass.search") &&
+      lfEvents.some((e) => e.type === "tool_call.finished" && e.data.tool === "overpass.search"),
+    JSON.stringify(lfEvents.map((e) => e.type)),
+  );
   // 10. Opportunity Agent: the subject is reduced to its search topic before
   // querying. Fixture-driven unit checks prove the deterministic extraction
   // (including the stopword guardrail) and the HN parse/rank path with no
@@ -896,6 +1147,16 @@ async function main(): Promise<void> {
   check(
     "office scene routes the Manager at its desk while a task is open",
     busyHtml.includes("Manager Agent - routing task"),
+  );
+  const busyOpportunity = [
+    ev(1, "task.queued", null, { command: "find leads for web design clients in Austin" }, 5000, null),
+    ev(2, "run.started", "opportunity", {}, 4000),
+    ev(3, "tool_call.started", "opportunity", { tool: "overpass.search", request: "https://overpass-api.example/x" }, 900),
+  ];
+  const busyOpportunityHtml = renderToString(React.createElement(office.OfficeScene, { events: busyOpportunity, agents: null, error: null }));
+  check(
+    "office scene derives opportunity runs generically: robot at its station on an overpass.search call",
+    busyOpportunityHtml.includes('data-pos="station"') && busyOpportunityHtml.includes("calling overpass.search"),
   );
   const walkStates = office.deriveOfficeState([ev(1, "run.started", "research", {}, 600)], null, t0);
   check(
