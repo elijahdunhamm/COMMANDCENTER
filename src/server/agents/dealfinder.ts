@@ -53,7 +53,10 @@ interface GeocodeOutcome {
   call: ToolCall;
 }
 
-async function geocodePlace(
+/** Geocodes one place via OpenStreetMap Nominatim (permitted, no key).
+ *  Shared with the Opportunity Agent lead finder so every geocode takes the
+ *  same path, with the same tool reporting and provenance. */
+export async function geocodePlace(
   place: string,
   reporter?: ExecutionContext["reporter"],
 ): Promise<GeocodeOutcome> {
@@ -123,8 +126,9 @@ async function geocodePlace(
   }
 }
 
-/** Address built only from real addr:* tags; null when OSM lists none. */
-function buildAddress(tags: Record<string, string>): string | null {
+/** Address built only from real addr:* tags; null when OSM lists none.
+ *  Shared with the Opportunity Agent lead finder (same honesty rule). */
+export function buildAddress(tags: Record<string, string>): string | null {
   const parts = [
     [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" "),
     tags["addr:city"],
