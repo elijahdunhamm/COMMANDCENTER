@@ -141,6 +141,71 @@ export interface SummarySection {
   provenance: Provenance;
 }
 
+/* ------------------------------------------------ opportunity (lead finder) */
+
+/** One lead: a named, categorized business whose OpenStreetMap record lists
+ *  no website. This reports a listing gap in the map data, never a verified
+ *  fact about the business; the framing is stated in every result. */
+export interface OpportunityLead {
+  osmType: string;
+  osmId: number;
+  osmUrl: string;
+  name: string;
+  /** The real OpenStreetMap tags this match is based on, e.g. "shop=hairdresser". */
+  category: string;
+  /** Built only from real addr:* tags; null when OSM lists no address. */
+  address: string | null;
+  /** From the OSM phone or contact:phone tag only; null when neither is listed. */
+  phone: string | null;
+  lat: number;
+  lon: number;
+  /** Computed haversine distance from the search point (labeled as computed). */
+  distanceMiles: number;
+  distanceKm: number;
+  provenance: Provenance;
+}
+
+/** Structured output of the Opportunity Agent lead finder ("find leads for X
+ *  in Y"): local businesses whose OpenStreetMap listing shows no website.
+ *  The same result shape covers the honest ask-for-location, source-
+ *  unavailable, and empty-area outcomes; nothing is ever filled in. */
+export interface OpportunityLeadsResult {
+  kind: "opportunity.leads";
+  command: string;
+  /** The subject the agent was handed, kept verbatim. */
+  subject: string;
+  /** The "for X" phrase when present (who the leads are for). Captured for
+   *  display only: OpenStreetMap cannot be searched by client fit, so it
+   *  never filtered or ranked anything. */
+  audience: string | null;
+  radiusMiles: number;
+  radiusSource: "command" | "default";
+  origin: DealFinderOrigin | null;
+  /** True when no location could be resolved and the owner is being asked for one. */
+  askedForLocation: boolean;
+  /** True when the Overpass source was unreachable/unusable after the fallback chain. */
+  sourceUnavailable: boolean;
+  /** True when identical-query results came from the in-process cache. */
+  servedFromCache: boolean;
+  /** The exact Overpass request URL when a search was attempted (provenance). */
+  overpassUrl: string | null;
+  /** The endpoint that actually answered (null when none did). */
+  servedBy: string | null;
+  /** True when the answering endpoint was not the first candidate. */
+  fallbackUsed: boolean;
+  /** How many elements the Overpass query returned (null when no search ran). */
+  elementsFetched: number | null;
+  /** Hard cap on leads listed per result. */
+  leadCap: number;
+  leads: OpportunityLead[];
+  /** The exact deterministic ranking rule that ordered the leads. */
+  rankingRule: string;
+  /** The honesty framing, present in EVERY result: leads mean no website
+   *  listed on OpenStreetMap, a listing gap, not a verified fact. */
+  websiteListingNote: string;
+  notes: string[];
+}
+
 export interface PlaceSection {
   displayName: string | null;
   lat: number | null;
@@ -252,6 +317,7 @@ export type ResultPayload =
   | DealFinderSearchResult
   | CodingWorkResult
   | OpportunityScanResult
+  | OpportunityLeadsResult
   | CapabilityMissingResult
   | DisabledAgentResult
   | AgentRefusalResult;

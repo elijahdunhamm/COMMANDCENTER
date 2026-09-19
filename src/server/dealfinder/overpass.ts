@@ -26,8 +26,15 @@ import type { ToolCallReporter } from "../agents/base";
 
 export interface OverpassSelector {
   key: string;
-  value: string;
-  require?: { key: string; value: string };
+  /** Fixed tag value to match. Omit to match on key existence only. */
+  value?: string;
+  /** Optional companion tag that must also be present (e.g. beauty=hairdresser on shop=beauty). */
+  require?: { key: string; value?: string };
+  /** Extra keys that must exist on the element (existence only), e.g. ["name"]. */
+  requireKeys?: string[];
+  /** Keys that must be absent, each emitted as a [!"key"] negation filter,
+   *  e.g. ["website", "contact:website"] for the missing-website lead filter. */
+  excludeKeys?: string[];
 }
 
 export interface OverpassElement {
@@ -135,7 +142,10 @@ export function bboxForRadius(
 
 /* ---------------------------------------------------------------- query */
 
-/** One union query per search: shop=hairdresser plus barber tagging. */
+/** One union query per selector. A selector with a fixed value emits
+ *  ["key"="value"]; one without emits ["key"] (existence). requireKeys adds
+ *  ["key"] filters and excludeKeys adds [!"key"] negations, so richer filters
+ *  (e.g. named businesses with no website tag) stay one connector. */
 export function buildOverpassQuery(
   selectors: OverpassSelector[],
   bbox: { s: number; w: number; n: number; e: number },
@@ -143,11 +153,19 @@ export function buildOverpassQuery(
 ): string {
   const box = `(${bbox.s.toFixed(6)},${bbox.w.toFixed(6)},${bbox.n.toFixed(6)},${bbox.e.toFixed(6)})`;
   const parts = selectors.map((sel) => {
-    const base = `node["${sel.key}"="${sel.value}"]`;
-    const withRequire = sel.require
-      ? `${base}["${sel.require.key}"="${sel.require.value}"]`
-      : base;
-    return `  ${withRequire}${box};`;
+    let filters =
+      sel.value !== undefined
+        ? `node["${sel.key}"="${sel.value}"]`
+        : `node["${sel.key}"]`;
+    if (sel.require) {
+      filters +=
+        sel.require.value !== undefined
+          ? `["${sel.require.key}"="${sel.require.value}"]`
+          : `["${sel.require.key}"]`;
+    }
+    for (const k of sel.requireKeys ?? []) filters += `["${k}"]`;
+    for (const k of sel.excludeKeys ?? []) filters += `[!"${k}"]`;
+    return `  ${filters}${box};`;
   });
   return `[out:json][timeout:20];\n(\n${parts.join("\n")}\n);\nout center ${elementLimit};`;
 }
