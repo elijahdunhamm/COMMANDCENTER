@@ -80,6 +80,11 @@ const VALID_INTENTS: Intent[] = ["research", "coding", "opportunity", "dealfinde
 
 const RULES: { intent: Intent; label: string; re: RegExp }[] = [
   {
+    intent: "opportunity",
+    label: "lead-finding phrasing",
+    re: /\bfind (me )?leads\b|\bleads (for|about|on)\b/i,
+  },
+  {
     intent: "dealfinder",
     label: "price/comparison or local-service phrasing",
     re: /\b(find me|cheapest|cheaper|under \$?\d|within \d+ ?(mi|miles|km)|near me|compare (prices|options)|barber|barbershop|hairdresser|haircut|salon|dentist|plumber|mechanic|restaurant|deal)\b/i,
